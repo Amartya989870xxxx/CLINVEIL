@@ -182,4 +182,3 @@ The one residual conflict is a link whose own filename holds PII: the placeholde
 declared without the target's hash, so the validator reports one undeclared input. Privacy and no-read
 win over that error. All other reads open the verified real path with `O_NOFOLLOW | O_NONBLOCK` and require
 a regular file.
-

@@ -649,4 +649,3 @@ as short PDF/JPEG payloads that the signature check already withheld). After the
 
 Practice data contains none of these patterns, so its output does not change. The fixes are evidenced by the
 reproduction tests. Not changed: the documented open issues in §6.
-
