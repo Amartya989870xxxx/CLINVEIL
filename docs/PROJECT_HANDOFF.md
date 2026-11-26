@@ -7,7 +7,7 @@
 | Event | Yugaantar DevForge · Track 3 · **Secret Wards** |
 | Repository | https://github.com/Amartya989870xxxx/CLINVEIL (public) |
 | Official toolkit | https://github.com/Reinforce-SST/Secret-Wards-ToolKit (cloned read-only at `organiser-toolkit/`, git-ignored, commit `6c0a85a`) |
-| Last full verification of this document | 2026-11-26, against the F1–F4 fix commit on top of `e6021fa` (see §2 and the changelog) |
+| Last full verification of this document | 2026-11-27, against the Python 3.10 CI fix commit on top of `fab12fb` (see §2 and the changelog) |
 
 > **How to read this file.** Every statement is marked by where it comes from: *verified* (a command was run
 > or a file was read while writing this), *documented* (taken from a repository document, not re-run), or
@@ -90,15 +90,15 @@ k-anonymity suppression (Phases 3–4).
 
 ---
 
-## 2. Current Git state (verified 2026-11-26)
+## 2. Current Git state (verified 2026-11-27)
 
 | Item | Value (verified with `git`) |
 |---|---|
 | Active branch | `phase-2.1-remediation` |
-| HEAD | the "Phase 2.1: final review fixes F1–F4" commit (its hash is recorded in the next update, because a commit cannot contain its own hash) |
-| Before it | `e6021fa` handoff docs → `5a242ab` verification fixes → `683074f` remediation → `ac37504` |
+| HEAD | the Python 3.10 CI fix commit (`dev_eval.py` `RecursionError` fix; its hash is recorded in the next update, because a commit cannot contain its own hash) |
+| Before it | `fab12fb` formatting cleanup → `fed8004` final review fixes F1–F4 → `e6021fa` handoff docs → `5a242ab` verification fixes → `683074f` remediation → `ac37504` |
 | `main` / `origin/main` | both `ac37504` "Merge pull request #2 from …/phase-2-detection" (Phase 0 + 1 + 2) |
-| Phase 2.1 pushed / merged? | **No.** Exists only as local commits on `phase-2.1-remediation`; `origin` has no such branch |
+| Phase 2.1 pushed / merged? | Pushed up to `fab12fb` on `origin/phase-2.1-remediation` (open PR #3); the Python 3.10 CI fix commit is local and not yet pushed/merged. |
 | Remote | `origin` → https://github.com/Amartya989870xxxx/CLINVEIL.git |
 | Untracked (intentional) | `docs/research/GEMINI_PHASE2_CODE_SECURITY_AUDIT.md` |
 | Toolkit | `organiser-toolkit/` at `6c0a85a`, clean, git-ignored |
@@ -111,10 +111,12 @@ Commit history (verified):
 | `7934185` | Licensing correction: no project licence, third-party notices, team APEX (**published**) |
 | `d2c4b31` → `643c95f` | Phase 1 ingestion; merged via PR #1 |
 | `53ec8ff` → `ac37504` | Phase 2 detection; merged via PR #2 |
-| `683074f` | Phase 2.1: audit remediation (local) |
-| `5a242ab` | Phase 2.1: final security-verification fixes (local) |
-| `e6021fa` | docs: this handoff document (local) |
-| (next commit) | Phase 2.1: final review fixes F1–F4 (local) |
+| `683074f` | Phase 2.1: audit remediation (pushed on `phase-2.1-remediation`) |
+| `5a242ab` | Phase 2.1: final security-verification fixes (pushed on `phase-2.1-remediation`) |
+| `e6021fa` | docs: this handoff document (pushed on `phase-2.1-remediation`) |
+| `fed8004` | Phase 2.1: final review fixes F1–F4 (pushed on `phase-2.1-remediation`) |
+| `fab12fb` | docs: clean Phase 2.1 formatting (pushed on `phase-2.1-remediation`) |
+| (next commit) | Phase 2.1: fix Python 3.10 CI failure (`RecursionError` in `dev_eval.py`) (local) |
 
 **The Gemini audit report is deliberately untracked.** It quotes practice canary and patient names. Never
 commit it; if it must be versioned, commit a *redacted* copy. Its findings and our responses are in
@@ -131,7 +133,7 @@ Legend: ✅ completed and verified · 🟡 partial · 📋 planned (not implemen
 | 0 Foundation | ✅ | `59c0ea8` (+ `7934185` licensing) |
 | 1 Ingestion + common IR | ✅ | `d2c4b31` (merged `643c95f`) |
 | 2 Contextual PII detection | ✅ (with known limits, §4) | `53ec8ff` (merged `ac37504`) |
-| 2.1 Audit remediation | ✅ locally, **unpushed/unmerged** | `683074f`, `5a242ab` |
+| 2.1 Audit remediation | ✅ PR #3 open (CI fix local) | `683074f`, `5a242ab`, `fed8004`, `fab12fb` + local CI fix |
 | 3 Identity resolution | 📋 not started (stub only) | n/a |
 | 4 Privacy transformations | 📋 not started (only `age_band()` helper exists) | n/a |
 | 5 Secure export / final validation | 🟡 partial (see below) | n/a |
@@ -229,7 +231,19 @@ Backend paths are under `backend/src/clinveil/`. Package size at time of writing
   byte-identical to Phase 2; same-secret determinism and input immutability hold; side-channel scan clean.
   Performance: 200 files 2.35 s / 32 MB; 2,000 files 22.2 s / 40 MB; back-to-back timing equal to `e6021fa`
   within noise.
-- **Remaining:** push/merge decision belongs to the user; open issues in §4.
+- **Python 3.10 CI fix (commit after `fab12fb`):** GitHub Actions PR #3 failed on Python 3.10 (`test_dev_eval_script_runs`)
+  while passing on Python 3.12 because `organiser-toolkit/dev/input/misc/deep_export.json` has 1,500 levels of JSON
+  nesting; CPython 3.10's `json.loads()` raises `RecursionError` at 1,000 frames, whereas `backend/scripts/dev_eval.py`
+  (`Parsed.__init__`) only suppressed `ValueError`. Fixed by catching `(ValueError, RecursionError)` in `dev_eval.py`,
+  adding an optional backward-compatible `--input` flag and clean PII-free error handling for missing/malformed truth or
+  report JSON, updating `test_dev_eval_script_runs` to surface stdout/stderr on failure, and adding 4 isolated synthetic
+  tests in `tests/unit/test_dev_eval.py`. Details: `docs/evaluation/PHASE2_REMEDIATION.md` §9.
+- **Tests after Python 3.10 CI fix (run 2026-11-27):** `pytest` **745 passed, 1 xfailed** on Python 3.10 (`uv`, 18.61 s),
+  Python 3.12 (`uv`, 16.72 s), and local `.venv` Python 3.13 (19.89 s); `ruff check` and `ruff format --check` exit 0
+  (91 files). On Python 3.10: `main.py`, `validate_output.py` (CONTRACT OK), `check_dev.py` (0/3230, 0/4 canaries,
+  4855/4855), `dev_eval.py` (0.0/3226, 0/8 canaries, 98.8% probes, 99.8% retention), and same-secret determinism all
+  exit 0; `check_submission.py --repo . --run` exits 0 (READY, known E5 warning).
+- **Remaining:** push CI fix commit and merge PR #3 (user decision); open issues in §4.
 
 ### Phase 3: Patient identity resolution 📋 not started
 - **Objective:** same real patient → one stable keyed pseudonym across files/scripts; never merge different people.
@@ -434,6 +448,7 @@ Keep numbers traceable to a command you ran. A commit cannot contain its own has
 
 | Date | Agent | Entry |
 |---|---|---|
+| 2026-11-27 | Antigravity | Fixed Python 3.10 GitHub Actions CI failure blocking PR #3 (`phase-2.1-remediation` → `main`), committed locally on top of `fab12fb`. Root cause: `organiser-toolkit/dev/input/misc/deep_export.json` (1,500-level nested JSON) triggers `RecursionError` in CPython 3.10 `json.loads()`, which was uncaught in `backend/scripts/dev_eval.py` (`Parsed.__init__` only suppressed `ValueError`). Files changed: `backend/scripts/dev_eval.py`, `backend/tests/regression/test_phase2_release.py`, new `backend/tests/unit/test_dev_eval.py`, `docs/evaluation/PHASE2_REMEDIATION.md` (§9), this file. Run: `ruff check` / `ruff format --check` exit 0 (91 files); `pytest` 745 passed / 1 xfailed on Python 3.10 (`uv`), Python 3.12 (`uv`), and local `.venv` (Python 3.13); Python 3.10 `validate_output.py` (CONTRACT OK), `check_dev.py` (0/3230, 0/4 canaries, 4855/4855), `dev_eval.py` (0.0/3226, 0/8 canaries, 98.8% probes, 99.8% retention), same-secret determinism, and `check_submission.py --repo . --run` (READY, known E5 warning) all exit 0. Regressions: none. Not pushed or merged. Next: user pushes CI fix to PR #3 and merges, then Phase 3 linking. |
 | 2026-11-26 | Claude Opus 5.5 | Phase 2.1 final review fixes F1–F4, committed on top of `e6021fa` (the handoff commit created in the entry below). The review file was not present in the repo; findings taken from the task description and reproduced first (15 of 30 new tests failed on `e6021fa`, all 30 pass now). Files changed: `ingestion/discovery.py`, `pipeline.py`, `parsing/attachments.py`, `sanitization/processors.py`, `detection/views.py`, new `tests/regression/test_phase21_final_review.py`, docs (`PHASE2_REMEDIATION.md` §8, this file, `THREAT_MODEL.md`, `README.md`, `PHASE2_DETECTION.md`, `IMPLEMENTATION_PLAN.md`). Run: pytest 741 passed / 1 xfailed; ruff exit 0; `validate_output.py`, `check_dev.py`, `check_submission.py --run` exit 0 (READY, known E5 warning); practice output byte-identical to Phase 2. Regressions: none found. Outstanding decisions: push/merge; O1 symlink trade-off. Next: Phase 3 linking. |
 | 2026-11-26 | Claude Sonnet 5.5 | Created this handoff (commit `e6021fa`). Read-only with respect to production code. Verified: branch `phase-2.1-remediation`, HEAD `5a242ab`, `main`=`origin/main`=`ac37504`, Phase 2.1 unpushed; `pytest` 711 passed / 1 xfailed; `ruff check` and `ruff format --check` clean. Not re-run for this entry: the official scripts (figures in §3 come from the preceding verification session). Could not verify: official score (sealed evaluator), Phase 2 commit's own test count, Phase 0/1 numbers (taken from repo docs). The file existed beforehand as an empty untracked placeholder. |
 | 2026-11-26 | Claude Opus 5.5 | Phase 2.1: `683074f` audit remediation; `5a242ab` final security-verification fixes (S1–S5). Tests then: 711 passed, 1 xfailed; official checks passed (see §3). Details in `docs/evaluation/PHASE2_REMEDIATION.md`. |

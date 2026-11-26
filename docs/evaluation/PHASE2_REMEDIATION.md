@@ -649,3 +649,43 @@ as short PDF/JPEG payloads that the signature check already withheld). After the
 
 Practice data contains none of these patterns, so its output does not change. The fixes are evidenced by the
 reproduction tests. Not changed: the documented open issues in §6.
+
+## 9. Python 3.10 CI failure fix (after `fab12fb`)
+
+GitHub Actions run `45877028053` on PR #3 (`phase-2.1-remediation` → `main`) passed on Python 3.12 but failed on
+Python 3.10 (job `140106597858`) in `backend/tests/regression/test_phase2_release.py::test_dev_eval_script_runs`
+with `subprocess.CalledProcessError` (exit status 1).
+
+### Root cause
+- Reproduced locally on Python 3.10.20 (`cpython-3.10-macos-aarch64-none`): `main.py` succeeded (`files 200 sanitized 193 quarantined 7 records 822`), but `backend/scripts/dev_eval.py` crashed with:
+  `RecursionError: maximum recursion depth exceeded while decoding a JSON object from a unicode string` at `dev_eval.py:159` (`self.json = json.loads(raw)`).
+- `organiser-toolkit/dev/input/misc/deep_export.json` contains 1,500 levels of JSON nesting. CPython 3.10's
+  `json.loads()` hits the default 1,000-frame recursion limit and raises `RecursionError`, whereas CPython 3.12+
+  decodes 1,500 levels without raising `RecursionError`.
+- `Parsed.__init__` in `backend/scripts/dev_eval.py` only had `with contextlib.suppress(ValueError):` around
+  `json.loads(raw)`, leaving `RecursionError` unhandled. Production sanitisation (`clinveil/parsing/json_safety.py`)
+  already bounded JSON depth and caught `(ValueError, RecursionError)`, so no production engine change was needed.
+- The official answer key (`organiser-toolkit/dev/truth/truth.json`) was present and valid in CI; it was not the cause.
+
+### Fixes
+1. `backend/scripts/dev_eval.py`:
+   - Suppress `(ValueError, RecursionError)` when parsing raw JSON in `Parsed.__init__`.
+   - Add an optional backward-compatible `--input` CLI argument (falls back to `Path(truth).resolve().parents[1] / "input"` when omitted).
+   - Handle missing/unreadable/malformed `--truth` and `report.json` files cleanly with PII-free `stderr` diagnostics and exit code `2`.
+2. `backend/tests/regression/test_phase2_release.py`:
+   - Update `test_dev_eval_script_runs` to run with `check=False` and include `stdout`/`stderr` in the failure assertion so future CI failures are immediately diagnosable.
+3. `backend/tests/unit/test_dev_eval.py`:
+   - Add 4 isolated synthetic tests (invented identities only, plus a 1,500-level nested JSON fixture) covering deep JSON handling, leak detection with explicit `--input`, missing truth file handling, and malformed truth JSON handling.
+
+### Validation (all run, 2026-11-27)
+| Command | Exit | Result |
+|---|---:|---|
+| `ruff check src tests scripts ../main.py` / `ruff format --check src tests scripts ../main.py` | 0 / 0 | All checks passed / 91 files already formatted |
+| `cd backend && uv run --python 3.10 --with pytest --no-project pytest -q` | 0 | 745 passed, 1 xfailed (18.61 s) |
+| `cd backend && uv run --python 3.12 --with pytest --no-project pytest -q` | 0 | 745 passed, 1 xfailed (16.72 s) |
+| `cd backend && ../.venv/bin/pytest -q` (Python 3.13) | 0 | 745 passed, 1 xfailed (19.89 s) |
+| Python 3.10 `main.py` + `validate_output.py` | 0 / 0 | `files 200 sanitized 193 quarantined 7 records 822`; `CONTRACT OK` |
+| Python 3.10 `check_dev.py` | 0 | 0/3230 visible, 0/4 canaries, 4855/4855 medical values, 0 raw copies |
+| Python 3.10 `dev_eval.py --output OUT --truth organiser-toolkit/dev/truth/truth.json` | 0 | 0.0/3226 (0.00%), 0/8 canaries, 98.8% probes, 64228/64335 (99.8%) retention |
+| Python 3.10 same-secret determinism (`diff -r` + `cmp`) | 0 | Identical `sanitized/` and `records.jsonl` |
+| `.venv/bin/python organiser-toolkit/check_submission.py --repo . --run` | 0 | `READY TO SUBMIT` (1 known E5/O8 warning; input unchanged; secret never written) |

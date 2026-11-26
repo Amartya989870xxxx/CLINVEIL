@@ -38,6 +38,7 @@ import html
 import io
 import json
 import re
+import sys
 import unicodedata
 import urllib.parse
 from collections import Counter, defaultdict
@@ -155,7 +156,7 @@ class Parsed:
             with contextlib.suppress(csv.Error):
                 self.rows = list(csv.reader(io.StringIO(raw), delimiter=delimiter or ("\t" if fmt == "tsv" else ",")))
         elif fmt in ("json", "fhir"):
-            with contextlib.suppress(ValueError):
+            with contextlib.suppress(ValueError, RecursionError):
                 self.json = json.loads(raw)
 
     def _ptr(self, ptr: str):
@@ -218,13 +219,29 @@ def main() -> int:
     ap.add_argument(
         "--truth", default=str(Path(__file__).resolve().parents[2] / "organiser-toolkit/dev/truth/truth.json")
     )
+    ap.add_argument("--input", default=None, help="input directory (default: inferred sibling input/ of --truth)")
     ap.add_argument("--show", type=int, default=0)
     a = ap.parse_args()
     out = Path(a.output)
-    truth = json.loads(Path(a.truth).read_text(encoding="utf-8"))
-    inp = Path(a.truth).resolve().parents[1] / "input"
-    report = json.loads((out / "report.json").read_text(encoding="utf-8"))
-    renamed = {e["input_sha256"]: e.get("output") for e in report["files"]}
+    truth_path = Path(a.truth)
+    try:
+        truth = json.loads(truth_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        print(f"dev_eval: truth file not found: {truth_path}", file=sys.stderr)
+        return 2
+    except (OSError, ValueError) as exc:
+        print(f"dev_eval: invalid truth file ({type(exc).__name__})", file=sys.stderr)
+        return 2
+    if not isinstance(truth, dict) or not isinstance(truth.get("files"), dict):
+        print("dev_eval: invalid truth schema (missing 'files' mapping)", file=sys.stderr)
+        return 2
+    inp = Path(a.input) if a.input else truth_path.resolve().parents[1] / "input"
+    try:
+        report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"dev_eval: invalid or missing report.json ({type(exc).__name__})", file=sys.stderr)
+        return 2
+    renamed = {e["input_sha256"]: e.get("output") for e in report.get("files") or []}
 
     frac_total, frac_leak = Counter(), Counter()  # official-style fractional leak per type
     any_leak = Counter()  # mentions with at least one leaked key
