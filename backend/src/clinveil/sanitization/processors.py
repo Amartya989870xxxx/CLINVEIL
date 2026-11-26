@@ -33,6 +33,7 @@ from clinveil.linking.linker import link_record
 from clinveil.models.document import Base64Segment, Document, Field, FieldKind, Format
 from clinveil.models.findings import Action, EntityType, Finding
 from clinveil.models.records import RecordRef
+from clinveil.parsing.attachments import is_declared_data_key
 from clinveil.parsing.json_format import pointer
 from clinveil.privacy.pseudonym import Pseudonymizer
 from clinveil.sanitization.render import WITHHELD, render
@@ -115,7 +116,9 @@ class Sanitizer:
     def _new_value(self, f: Field, analysis: DocumentAnalysis, children: dict[str, Field]) -> object:
         own = analysis.findings.get(f.address, [])
         if f.kind is FieldKind.JSON_NUMBER:
-            if own:
+            # a PII number becomes 0 (type kept). A value that is ALREADY 0 is not transformed, so it is
+            # neither replaced nor counted (F4): findings stay detections, counts stay applied changes
+            if own and f.value != 0:
                 self.stats.count(own)
                 return 0
             return None
@@ -177,9 +180,10 @@ class Sanitizer:
                     new = f"{name} #{n}"
             if new is not None and new != f.value:
                 replacements[f.address] = new
-            if new is WITHHELD and f.segments[0].declared_type is not None:
-                # the attachment's integrity metadata describes the removed bytes: Attachment.hash is a
-                # SHA-1 fingerprint of the image (it could confirm a known photo), Attachment.size is stale
+            if f.segments and new is not None and new != f.value and _is_payload_member(f):
+                # the payload was rewritten or withheld: its integrity metadata describes the ORIGINAL bytes
+                # (Attachment.hash is a SHA-1 of them, usable to confirm a known photo or document;
+                # Attachment.size is stale). Dropped, with or without a declared contentType (F2).
                 parent = _parent(doc.native, f.path)
                 for k in ("hash", "size"):
                     if isinstance(parent, dict) and k in parent:
@@ -223,6 +227,14 @@ def sanitized_relpath(doc: Document, analysis: DocumentAnalysis, reserved: set[s
         rel = candidate
     taken.add(rel)
     return rel
+
+
+def _is_payload_member(f: Field) -> bool:
+    """An object member that carries an attachment payload (``data``, ``payload``…, ``valueBase64Binary``)."""
+    if not f.path or not isinstance(f.path[-1], str):
+        return False
+    key = f.path[-1].lower()
+    return is_declared_data_key(key) or key.endswith("base64binary")
 
 
 def _parent(root: object, path: tuple) -> object:

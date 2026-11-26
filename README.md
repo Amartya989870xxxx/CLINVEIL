@@ -132,7 +132,7 @@ overlaps its input. Full model: [docs/security/THREAT_MODEL.md](docs/security/TH
   propagation disabled, the practice-data leak rises to 1.3%. See
   [PHASE2_DETECTION.md](docs/evaluation/PHASE2_DETECTION.md) for all known failure cases.
 - A binary attachment inside JSON/FHIR is withheld (its `data` removed) since Phase 2.1; XML, PDF and images
-  as whole files are quarantined, not parsed. Hex and `\uXXXX` encodings inside plain text are not decoded.
+  as whole files are quarantined, not parsed. Hex encodings inside plain text are not decoded (`\uXXXX` and %-escapes are).
 - The independent Phase 2 audit and its remediation (what was reproduced, fixed, partly fixed or deferred):
   [PHASE2_REMEDIATION.md](docs/evaluation/PHASE2_REMEDIATION.md).
 

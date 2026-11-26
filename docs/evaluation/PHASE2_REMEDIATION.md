@@ -159,7 +159,7 @@ Paths are relative to `backend/src/clinveil/`. Tests are in `backend/tests/` (`R
   - The URL-safe alphabet is accepted and re-encoded URL-safe.
   - Runs of 12+ characters count when they decode to an identifier-length number (8+ digits);
     24+-character runs still need clean text.
-- **Limitations:** hex and `\uXXXX` encodings inside *text* are not decoded by the engine (the scorer
+- **Limitations (updated in §8, F3):** `\uXXXX` escapes in text are now decoded; hex encodings inside *text* are still not decoded by the engine (the scorer
   does decode them; JSON `\u` escapes are already decoded by the JSON parser). Nested base64 is not scanned.
 
 ### C1. Name before the relationship marker
@@ -411,7 +411,7 @@ versions.
 ## 6. What is still open
 
 - Free-text names with **no cue at all** that never appear in a structured field (unchanged from Phase 2).
-- Hex and `\uXXXX`-encoded PII inside plain text; nested base64.
+- Hex-encoded PII inside plain text; nested base64. (`\uXXXX` in plain text is decoded since §8, F3.)
 - WhatsApp sender role (C5); phonetic-key collisions in the coarse key (by design, C4).
 - E3/S1 contract conflict for an escaping symlink whose **own filename** holds PII (§7); E5 (Phase 3/4);
   F1 gazetteer size.
@@ -530,3 +530,123 @@ The whole Phase 2.1 diff against `ac37504` (3,400 added lines) was checked:
 - **Side channels:** `TMPDIR` stays empty. No whole-word PII surface or key appears in the report,
   `records.jsonl`, logs, stdout/stderr or output paths. The memo caches are empty after a run.
 - **Performance:** 2.1 s / 32 MB for 200 files; 20.2 s / 39 MB for 2,000 files.
+
+## 8. Final review: four findings (F1–F4)
+
+An independent final review (by "Gemini 4 Neon") approved Phase 2.1 with minor changes and reported four
+findings. **The review file itself was not in the repository** when this work was done: `docs/research/`
+contained only the original audit, and a search of the working tree found no other review file. The four
+findings below were taken from the user's task description, which states each one concretely, and **each was
+reproduced independently** against `e6021fa` before any change. `regression/test_phase21_final_review.py` was
+written first and run on the unmodified code: **15 failed, 15 passed** (the passing ones are guard cases, such
+as short PDF/JPEG payloads that the signature check already withheld). After the fixes: **30 passed**.
+
+### F1. Empty `input_sha256` after a failed read (fixed)
+- **Reproduced:** an internal symlink to a FIFO was reported with `"input_sha256": ""`.
+- **Root cause:**
+  - discovery checked only that an internal link stays inside the root, not that its target is a regular file;
+  - the pipeline's failure path left the digest empty whenever the read failed before hashing (not a
+    regular file, vanished, changed, I/O error).
+- **Fix:**
+  - an internal link to a FIFO/socket/device is flagged as special during discovery (metadata `stat` only,
+    never opened) and reported `not_a_regular_file`;
+  - in the failure path, an empty digest is replaced by the existing non-identifying `unread_id(f)`, derived
+    from the discovery position only.
+
+  External links are still never dereferenced or hashed.
+- **Tests** (an internal link to a regular file is still read and exported):
+  - internal link to a FIFO, external link to a FIFO, broken link, oversized file, internal link to a
+    regular file;
+  - a file vanishing between discovery and read;
+  - a read error during the read.
+- **Result:** no discovered entry has an empty identifier, and the practice run has 0 empty entries.
+
+### F2. Attachment `hash`/`size` and short binary payloads (fixed)
+- **Reproduced:**
+  - (A) a text attachment was cleaned and re-encoded but kept its original `hash` and `size`, which
+    fingerprint the PII-bearing original;
+  - (B) a binary payload withheld without a `contentType` kept `hash`/`size`;
+  - (C) short declared payloads under 16 base64 characters (`application/octet-stream`, the start of a PNG)
+    passed through raw.
+- **Root cause:**
+  - metadata was dropped only for a *withheld* payload that had a *declared* type;
+  - short declared values that did not decode as clean text were treated as ordinary strings whatever the
+    declared type.
+- **Fix:**
+  - whenever a payload member (`data`, `payload`, `base64`, `blob`, `file`, `attachment`, `*Base64Binary`) is
+    rewritten or withheld, its sibling `hash` and `size` are removed, with or without `contentType`;
+  - an unchanged attachment keeps its metadata;
+  - a short base64 value that decodes under a **binary** declaration (anything except `text/*` and JSON/XML/CSV-like
+    `application/*` types) is withheld;
+  - with no declaration, or a text declaration, short strings (`pending`, codes) stay ordinary strings;
+  - a long, impossible base64 value under a declaration still quarantines (`invalid_attachment`);
+  - an empty payload is unchanged.
+- **Preserved:** `contentType`, `title`, references, and array positions (array elements become
+  `"[ATTACHMENT-WITHHELD]"`).
+- **Tests:**
+  - text attachment with `hash`/`size`; unchanged text attachment;
+  - binary with and without `contentType`;
+  - short `octet-stream`, PNG, PDF and JPEG payloads; short undeclared strings;
+  - empty and invalid payloads;
+  - several attachments in one resource inside a FHIR Bundle (references resolve);
+  - JSON arrays.
+
+### F3. Percent-encoded values in spaced text, and `\uXXXX` (fixed)
+- **Reproduced:** `Exported from /exports/Orvila%20Tamsen/report.json` became `…/[NAME]%20Tamsen/…`, so the
+  surname leaked. `\uXXXX` escapes in plain text were not decoded at all.
+- **Root cause:** the decoded view only decoded %-escapes when the whole value had no whitespace or
+  contained `://`.
+- **Fix (`detection/views.py`):** inside spaced text, a %-run is decoded only with evidence that it is an
+  escape:
+  - its whitespace-delimited token is path/URL/query-like (`/ \ ? = &`);
+  - or the token holds two or more escapes;
+  - or the escape sits between letters/digits.
+
+  Bytes that are not valid printable UTF-8 are left as written (no replacement characters), so unrelated
+  percent signs (`98%`, `20%off`, `100%ABx`, `%ZZ`) are never touched.
+- **`\uXXXX`:** implemented, because it fits the same exact offset map in one bounded linear pass. Surrogate
+  pairs are joined; lone surrogates and control characters are not decoded. A detected value is replaced at
+  its exact encoded source span (`…/exports/[NAME]/report.json`). Text without findings is unchanged.
+- **Still not decoded:** hex encodings inside text (ambiguous with hashes and IDs).
+- **Tests:**
+  - names, digits and encoded slashes in paths;
+  - Windows paths; an encoded space between words; URL metadata fields;
+  - unrelated and invalid percent signs, unchanged;
+  - exact-span replacement;
+  - `\uXXXX` with surrogate safety, and a Windows path `C:\users` left alone.
+
+### F4. Zero-valued JSON numbers counted as redactions (fixed)
+- **Reproduced:** `{"pin": 0, "uhid": 0}` stayed unchanged but added 2 to `identifiers_detected` and
+  `entities`.
+- **Root cause:** a numeric finding was counted before checking that replacing it with `0` changed anything.
+- **Fix:** a PII number that is already `0` (`0` or `0.0`) is neither replaced nor counted. Detections
+  (`logs/detection_summary.json` `findings_total`) stay separate from applied transformations (`report.json`).
+- **Tests:**
+  - zero-valued fields;
+  - non-zero numbers replaced by `0` (type kept) and counted;
+  - string identifiers;
+  - unchanged vs changed FHIR `birthDate` generalisation;
+  - the `entities` counts.
+
+### Validation after F1–F4 (all run, 2026-11-26)
+| Command | Exit | Result |
+|---|---:|---|
+| `cd backend && ../.venv/bin/python -m pytest -q` | 0 | 741 passed, 1 xfailed (the documented Phase 3 xfail) |
+| `ruff check src tests scripts ../main.py` / `ruff format --check src tests scripts` | 0 / 0 | clean / 89 files formatted |
+| `backend/scripts/official_checks.sh --submit` | 0 | runs the three official scripts below |
+| `organiser-toolkit/validate_output.py --input organiser-toolkit/dev/input --output OUT` | 0 | CONTRACT OK |
+| `organiser-toolkit/check_dev.py --output OUT` | 0 | 0/3230 visible, 0/4 canaries, 4855/4855 medical values, 0 raw copies |
+| `organiser-toolkit/check_submission.py --repo . --run` | 0 | READY; one known warning (different secret → identical output, E5/O8) |
+
+- Practice `sanitized/` is byte-identical to Phase 2, and `report.json` has 0 empty identifiers.
+- Same-secret determinism holds (sanitized, records, logs, and the report excluding timing/resources) and
+  the input tree is unchanged.
+- `TMPDIR` stays empty; there are 0 whole-word PII surfaces or keys in the report, `records.jsonl`, logs,
+  stdout/stderr or output paths.
+- `dev_eval.py`: 0/3226 leak, 0/8 canaries, probes 98.8%, retention 99.8%.
+- **Performance:** 200 files 2.35 s / 32 MB, 2,000 files 22.2 s / 40 MB, both CONTRACT OK. Timed back to back
+  against `e6021fa` on the same machine, the difference is within noise (2.33–2.38 s for both).
+
+Practice data contains none of these patterns, so its output does not change. The fixes are evidenced by the
+reproduction tests. Not changed: the documented open issues in §6.
+

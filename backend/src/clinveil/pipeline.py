@@ -133,6 +133,10 @@ def _run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Polic
             records.extend(refs)
         except Exception as exc:  # noqa: BLE001 - fail safe: quarantine, never copy, never echo content
             entry.output, entry.status, entry.reason = None, "quarantined", safe_reason(exc)
+            if not entry.input_sha256:
+                # the read failed before any digest existed (vanished, changed, not a regular file):
+                # the report still needs an identifier, and it must not come from the path or a target
+                entry.input_sha256 = unread_id(f)
         files.append(entry)
         input_shas.append(entry.input_sha256)
     del index  # the run-local value index never outlives the run

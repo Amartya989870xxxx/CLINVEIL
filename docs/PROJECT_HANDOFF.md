@@ -7,7 +7,7 @@
 | Event | Yugaantar DevForge · Track 3 · **Secret Wards** |
 | Repository | https://github.com/Amartya989870xxxx/CLINVEIL (public) |
 | Official toolkit | https://github.com/Reinforce-SST/Secret-Wards-ToolKit (cloned read-only at `organiser-toolkit/`, git-ignored, commit `6c0a85a`) |
-| Last full verification of this document | 2026-11-26, against HEAD `5a242ab` (see §2 and the changelog) |
+| Last full verification of this document | 2026-11-26, against the F1–F4 fix commit on top of `e6021fa` (see §2 and the changelog) |
 
 > **How to read this file.** Every statement is marked by where it comes from: *verified* (a command was run
 > or a file was read while writing this), *documented* (taken from a repository document, not re-run), or
@@ -95,8 +95,8 @@ k-anonymity suppression (Phases 3–4).
 | Item | Value (verified with `git`) |
 |---|---|
 | Active branch | `phase-2.1-remediation` |
-| HEAD at time of writing | `5a242ab` "Phase 2.1: fixes from the final security verification" |
-| Before it | `683074f` "Phase 2.1: remediate the independent Phase 2 audit", then `ac37504` |
+| HEAD | the "Phase 2.1: final review fixes F1–F4" commit (its hash is recorded in the next update, because a commit cannot contain its own hash) |
+| Before it | `e6021fa` handoff docs → `5a242ab` verification fixes → `683074f` remediation → `ac37504` |
 | `main` / `origin/main` | both `ac37504` "Merge pull request #2 from …/phase-2-detection" (Phase 0 + 1 + 2) |
 | Phase 2.1 pushed / merged? | **No.** Exists only as local commits on `phase-2.1-remediation`; `origin` has no such branch |
 | Remote | `origin` → https://github.com/Amartya989870xxxx/CLINVEIL.git |
@@ -113,6 +113,8 @@ Commit history (verified):
 | `53ec8ff` → `ac37504` | Phase 2 detection; merged via PR #2 |
 | `683074f` | Phase 2.1: audit remediation (local) |
 | `5a242ab` | Phase 2.1: final security-verification fixes (local) |
+| `e6021fa` | docs: this handoff document (local) |
+| (next commit) | Phase 2.1: final review fixes F1–F4 (local) |
 
 **The Gemini audit report is deliberately untracked.** It quotes practice canary and patient names. Never
 commit it; if it must be versioned, commit a *redacted* copy. Its findings and our responses are in
@@ -208,6 +210,25 @@ Backend paths are under `backend/src/clinveil/`. Package size at time of writing
   byte-identical to Phase 2; `check_dev.py` 0/3230, 0/4 canaries, 4855/4855; `validate_output.py` CONTRACT OK;
   `check_submission.py --run` READY with one warning (different secret → identical output); 200 files 2.1 s / 32 MB;
   2,000 files 20.2 s / 39 MB; adversarial suite 175/175 (Phase 2 code: 50/175).
+- **Final review fixes F1–F4 (commit after `e6021fa`):** an independent final review approved Phase 2.1 with
+  minor changes and reported four findings. **The review file was not in the repository**
+  (`docs/research/` holds only the original audit); the findings were taken from the user's task description and
+  each was reproduced on `e6021fa` first (`regression/test_phase21_final_review.py`: 15 failed / 15 passed before,
+  30 passed after):
+  - F1: no empty `input_sha256` (internal links to FIFOs flagged in discovery; `unread_id` on failed reads);
+  - F2: `hash`/`size` removed whenever a payload is rewritten or withheld, with or without `contentType`; short
+    payloads under a binary declaration withheld;
+  - F3: %-escapes decoded in spaced text when there is evidence of an escape; `\uXXXX` in plain text decoded
+    (exact span mapping);
+  - F4: zero-valued JSON numbers are neither replaced nor counted.
+
+  Details: `docs/evaluation/PHASE2_REMEDIATION.md` §8.
+- **Tests after F1–F4 (run 2026-11-26):** `pytest` **741 passed, 1 xfailed**; ruff check/format exit 0.
+  `official_checks.sh --submit`, `validate_output.py`, `check_dev.py` and `check_submission.py --run` all exit 0:
+  CONTRACT OK, 0/3230, 0/4 canaries, 4855/4855, READY with the known E5 warning. Practice output is still
+  byte-identical to Phase 2; same-secret determinism and input immutability hold; side-channel scan clean.
+  Performance: 200 files 2.35 s / 32 MB; 2,000 files 22.2 s / 40 MB; back-to-back timing equal to `e6021fa`
+  within noise.
 - **Remaining:** push/merge decision belongs to the user; open issues in §4.
 
 ### Phase 3: Patient identity resolution 📋 not started
@@ -256,7 +277,7 @@ Backend paths are under `backend/src/clinveil/`. Package size at time of writing
 | O1 | **External symlink vs official validator** | Escaping symlink targets are never opened; the path is exported as an empty placeholder declared `suppressed` under a synthetic id (D28). `validate_output.py` accepts this with one WARN. **Conflict:** if the link's *own filename* contains PII, the placeholder is renamed and cannot be declared without the target's hash, so the validator reports one "neither exported nor declared" ERROR. Privacy + no-read were chosen over that error. Separately, the official validator itself reads link targets (blocks on a FIFO, crashes on a dangling link). **User decision pending** if the trade-off should change. |
 | O2 | **Hard links and filesystem races** | Hard links to files outside the root look like regular files and are read. Directory components swapped for symlinks *during* a run are not defended (only the final component is, via `O_NOFOLLOW`). Assumes the evaluator's read-only input copy. |
 | O3 | **Context-free patient names** | A name with no label, honorific, marker, phone, timeline or gazetteer pair that never appears in a structured field can be missed. Documented ablation: without cross-file propagation the practice leak was 1.3% (Phase 2). |
-| O4 | **Hex and `\uXXXX` escapes in plain text** | Not decoded by the engine (the official scorer decodes them). JSON `\u` escapes are handled by the JSON parser. HTML entities, %-escapes and base64 *are* decoded. |
+| O4 | **Hex escapes in plain text** | Still not decoded by the engine (the official scorer decodes them); ambiguous with hashes and IDs. **Partly resolved (F3):** `\uXXXX` in plain text and %-escapes in spaced text are now decoded; JSON `\u` escapes are handled by the JSON parser; HTML entities and base64 *are* decoded. |
 | O5 | **Nested base64** | Base64 inside a decoded payload is not scanned. |
 | O6 | **WhatsApp sender role** | Senders are always typed RELATIVE_NAME. Redaction is unaffected; the typed placeholder/entity may be wrong. |
 | O7 | **Small gazetteer** | 198 given names and 47 surnames after removing every practice-overlapping token (contamination control). Weak evidence by design (pair 0.75; single token 0.60, never redacted). |
@@ -372,7 +393,7 @@ Document map: `docs/architecture/SYSTEM_ARCHITECTURE.md` (pipeline, trust bounda
 1. **User decision:** push and merge `phase-2.1-remediation` (or request changes); decide the O1 symlink trade-off.
 2. **Phase 3:** evidence graph and pseudonym insertion (see §3), using `name_key_strict` + corroborators.
 3. **Phase 4:** keyed per-patient date shifting, truthful age bands, location generalisation, k-anonymity.
-4. Phase 5/6: own FHIR structural validator, `metrics/`, mutated practice copy, hex/`\u` decoding in text (O4).
+4. Phase 5/6: own FHIR structural validator, `metrics/`, mutated practice copy, hex decoding in text (O4).
 5. Write the 2-page Project Brief PDF from measured numbers only.
 6. Phase 7 only after the above, and only with frontend stack approval.
 
@@ -413,6 +434,7 @@ Keep numbers traceable to a command you ran. A commit cannot contain its own has
 
 | Date | Agent | Entry |
 |---|---|---|
-| 2026-11-26 | Claude Sonnet 5.5 | Created this handoff. Read-only with respect to production code. Verified: branch `phase-2.1-remediation`, HEAD `5a242ab`, `main`=`origin/main`=`ac37504`, Phase 2.1 unpushed; `pytest` 711 passed / 1 xfailed; `ruff check` and `ruff format --check` clean. Not re-run for this entry: the official scripts (figures in §3 come from the preceding verification session). Could not verify: official score (sealed evaluator), Phase 2 commit's own test count, Phase 0/1 numbers (taken from repo docs). The file existed beforehand as an empty untracked placeholder. |
+| 2026-11-26 | Claude Opus 5.5 | Phase 2.1 final review fixes F1–F4, committed on top of `e6021fa` (the handoff commit created in the entry below). The review file was not present in the repo; findings taken from the task description and reproduced first (15 of 30 new tests failed on `e6021fa`, all 30 pass now). Files changed: `ingestion/discovery.py`, `pipeline.py`, `parsing/attachments.py`, `sanitization/processors.py`, `detection/views.py`, new `tests/regression/test_phase21_final_review.py`, docs (`PHASE2_REMEDIATION.md` §8, this file, `THREAT_MODEL.md`, `README.md`, `PHASE2_DETECTION.md`, `IMPLEMENTATION_PLAN.md`). Run: pytest 741 passed / 1 xfailed; ruff exit 0; `validate_output.py`, `check_dev.py`, `check_submission.py --run` exit 0 (READY, known E5 warning); practice output byte-identical to Phase 2. Regressions: none found. Outstanding decisions: push/merge; O1 symlink trade-off. Next: Phase 3 linking. |
+| 2026-11-26 | Claude Sonnet 5.5 | Created this handoff (commit `e6021fa`). Read-only with respect to production code. Verified: branch `phase-2.1-remediation`, HEAD `5a242ab`, `main`=`origin/main`=`ac37504`, Phase 2.1 unpushed; `pytest` 711 passed / 1 xfailed; `ruff check` and `ruff format --check` clean. Not re-run for this entry: the official scripts (figures in §3 come from the preceding verification session). Could not verify: official score (sealed evaluator), Phase 2 commit's own test count, Phase 0/1 numbers (taken from repo docs). The file existed beforehand as an empty untracked placeholder. |
 | 2026-11-26 | Claude Opus 5.5 | Phase 2.1: `683074f` audit remediation; `5a242ab` final security-verification fixes (S1–S5). Tests then: 711 passed, 1 xfailed; official checks passed (see §3). Details in `docs/evaluation/PHASE2_REMEDIATION.md`. |
 | 2026-11-26 | Claude Opus 5.5 | Phase 2 `53ec8ff` (merged `ac37504`); Phase 1 `d2c4b31` (merged `643c95f`); licensing correction `7934185`; Phase 0 `59c0ea8`. |

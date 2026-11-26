@@ -69,8 +69,11 @@ def discover(root: Path) -> Iterator[InputFile]:
             else:
                 escapes = not _within(real, root_real)
                 if not escapes:
+                    # an internal link may point at a FIFO/socket/device: metadata only, never opened
                     with contextlib.suppress(OSError):
-                        size = real.stat().st_size
+                        st_real = real.stat()
+                        size = st_real.st_size
+                        special = not stat.S_ISREG(st_real.st_mode)
         else:
             with contextlib.suppress(OSError):
                 st = p.lstat()

@@ -6,7 +6,11 @@ sees. Three encodings hide identifiers from pattern detectors:
 * **XHTML markup** (FHIR ``text.div``, HTML notes): tags become a line break, so a
   detector never runs across ``</p>`` and an address never swallows markup;
 * **HTML character references** (``&#79;rvila``, ``&#x39;&#x38;…``, ``&amp;``);
-* **percent-encoding** (``Orvila%20Tamsen``, ``TST%2F26%2F004417``) in paths and URLs.
+* **percent-encoding** (``Orvila%20Tamsen``, ``TST%2F26%2F004417``) in paths and URLs, also inside
+  ordinary spaced text when there is evidence of an escape (path-like token, several escapes, or an
+  escape between letters/digits); invalid or non-printable escapes are left as written;
+* **``\\uXXXX`` escapes** written into plain text (surrogate pairs joined; lone surrogates and control
+  characters are not decoded).
 
 :func:`decoded_view` returns ``None`` when a value has none of these (the common
 case, zero cost). Otherwise each view character records the original span it came
@@ -29,6 +33,55 @@ _TAG = re.compile(
 )
 _ENTITY = re.compile(r"&(?:#\d{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});")
 _PCT_RUN = re.compile(r"(?:%[0-9A-Fa-f]{2})+")
+_UESC_RUN = re.compile(r"(?:\\u[0-9A-Fa-f]{4})+")
+_PATHLIKE = frozenset("/\\?=&")
+
+
+def _pct_allowed(text: str, m: re.Match[str]) -> bool:
+    """Decode a %-run inside spaced text only with evidence it is an escape, not a percent sign.
+
+    Evidence: the whitespace-delimited token around it is path/URL/query-like (``/ \\ ? = &``),
+    or holds two or more escapes, or the escape sits between letters/digits (``Orvila%20Tamsen``).
+    """
+    a = m.start()
+    while a > 0 and not text[a - 1].isspace():
+        a -= 1
+    b = m.end()
+    while b < len(text) and not text[b].isspace():
+        b += 1
+    token = text[a:b]
+    if any(c in _PATHLIKE for c in token) or len(_PCT_RUN.findall(token)) >= 2 or m.group().count("%") >= 2:
+        return True
+    left = text[m.start() - 1] if m.start() > 0 else ""
+    right = text[m.end()] if m.end() < len(text) else ""
+    return left.isalnum() and right.isalnum()
+
+
+def _printable_utf8(data: bytes) -> str | None:
+    try:
+        out = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return out if out.isprintable() or not out.strip(" ") else None
+
+
+def _unescape_u(run: str) -> list[tuple[str, int, int]]:
+    """Decode a run of ``\\uXXXX`` escapes (surrogate pairs joined) into (char, start, end) offsets."""
+    units = [int(run[k + 2 : k + 6], 16) for k in range(0, len(run), 6)]
+    out: list[tuple[str, int, int]] = []
+    k = 0
+    while k < len(units):
+        u = units[k]
+        if 0xD800 <= u <= 0xDBFF and k + 1 < len(units) and 0xDC00 <= units[k + 1] <= 0xDFFF:
+            ch = chr(0x10000 + ((u - 0xD800) << 10) + (units[k + 1] - 0xDC00))
+            out.append((ch, 6 * k, 6 * (k + 2)))
+            k += 2
+            continue
+        if 0xD800 <= u <= 0xDFFF or not chr(u).isprintable():
+            return []  # a lone surrogate or a control character: not text, leave the run as written
+        out.append((chr(u), 6 * k, 6 * (k + 1)))
+        k += 1
+    return out
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,8 +131,10 @@ def _utf8_chunks(data: bytes) -> list[tuple[int, int]]:
 def decoded_view(text: str) -> View | None:
     markup = bool(_TAG.search(text))
     entity = bool(_ENTITY.search(text))
-    pct = bool(_PCT_RUN.search(text)) and ("://" in text or not any(c.isspace() for c in text.strip()))
-    if not (markup or entity or pct):
+    pct = bool(_PCT_RUN.search(text))
+    pct_whole = pct and ("://" in text or not any(c.isspace() for c in text.strip()))  # the value is a path/URL
+    uesc = "\\u" in text and bool(_UESC_RUN.search(text))
+    if not (markup or entity or pct or uesc):
         return None
     chars: list[str] = []
     starts: list[int] = []
@@ -106,15 +161,22 @@ def decoded_view(text: str) -> View | None:
                     emit(ch, m.start(), m.end())
                 i = m.end()
                 continue
-        if pct and c == "%" and (m := _PCT_RUN.match(text, i)):
+        if pct and c == "%" and (m := _PCT_RUN.match(text, i)) and (pct_whole or _pct_allowed(text, m)):
             data = bytes.fromhex(m.group().replace("%", ""))
-            for off, length in _utf8_chunks(data):
-                a = m.start() + 3 * off
-                b = a + 3 * length
-                for ch in data[off : off + length].decode("utf-8", errors="replace"):
-                    emit(ch, a, b)
-            i = m.end()
-            continue
+            if _printable_utf8(data) is not None:  # invalid or control bytes: leave the escape as written
+                for off, length in _utf8_chunks(data):
+                    a = m.start() + 3 * off
+                    for ch in data[off : off + length].decode("utf-8"):
+                        emit(ch, a, a + 3 * length)
+                i = m.end()
+                continue
+        if uesc and c == "\\" and (m := _UESC_RUN.match(text, i)):
+            decoded = _unescape_u(m.group())
+            if decoded:
+                for ch, a, b in decoded:
+                    emit(ch, m.start() + a, m.start() + b)
+                i = m.end()
+                continue
         emit(c, i, i + 1)
         i += 1
     return View("".join(chars), tuple(starts), tuple(ends), tuple(tags))

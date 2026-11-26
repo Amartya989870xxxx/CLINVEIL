@@ -128,5 +128,5 @@ utility ≥ 0.40 coupling threshold with margin; age bands always contain the tr
 4. **P4: generalisation**: age bands, village → tehsil/district, PIN → 3-digit, plus a k-anonymity check over
    (age band, gender, district, admission week, rare diagnosis) with rare-cell suppression
 5. **P2 hardening**: mutated copy of the practice set (names swapped, labels renamed) as a second generalisation
-   benchmark; widen the district/tehsil gazetteer beyond UP; decode hex / `\uXXXX` in plain text (scorer does).
+   benchmark; widen the district/tehsil gazetteer beyond UP; decode hex in plain text (scorer does; `\uXXXX` done in 2.1).
    Phase 3 must link with `translit.name_key_strict` plus corroborating identifiers, never the coarse `name_key`

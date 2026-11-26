@@ -120,6 +120,20 @@ def _withheld(start: int, end: int, ctype: str | None) -> Payload:
     return Payload(start, end, "", "binary", False, ctype, withheld=True)
 
 
+_TEXTUAL_SUBTYPES = ("json", "xml", "csv", "x-www-form-urlencoded", "javascript", "x-ndjson", "yaml", "x-yaml")
+
+
+def is_textual_type(ctype: str | None) -> bool:
+    """Is a declared media type text? ``None`` (no declaration) counts as text: no binary evidence."""
+    if ctype is None:
+        return True
+    media = ctype.split(";", 1)[0].strip().lower()
+    if media.startswith("text/"):
+        return True
+    major, _, sub = media.partition("/")
+    return major == "application" and (sub in _TEXTUAL_SUBTYPES or sub.endswith(("+json", "+xml")))
+
+
 def decode_declared(
     value: str, ctype: str | None, limits: IngestLimits, *, withhold_binary: bool = False
 ) -> Payload | None:
@@ -127,7 +141,10 @@ def decode_declared(
 
     Values shorter than ``MIN_DECLARED`` base64 characters that fail to decode as
     text are treated as ordinary strings (a short word such as ``pending`` is
-    base64-shaped by accident). Longer base64-shaped values must decode.
+    base64-shaped by accident) **unless the declared content type is binary**
+    (``image/*``, ``application/octet-stream``, ``application/pdf``…): a short payload
+    that decodes under a binary declaration is withheld like a long one (Phase 2.1, F2).
+    Longer base64-shaped values must decode.
     """
     if not looks_base64(value):
         return None
@@ -147,6 +164,9 @@ def decode_declared(
         if withhold_binary:
             return _withheld(0, len(value), ctype)
         raise QuarantineError("unsupported_attachment")
+    binary_declared = not is_textual_type(ctype)
+    if short and binary_declared and withhold_binary:
+        return _withheld(0, len(value), ctype)  # short raw bytes under a binary declaration: never released
     try:
         dec = decode_text(data)
     except QuarantineError:

@@ -210,7 +210,7 @@ Linear time, flat memory (two passes re-read files rather than holding documents
   is an interim treatment; Phase 4 replaces it with per-patient shifted dates.
 - **XML / PDF / images** are still quarantined, not parsed. Since 2.1 a binary *attachment* inside JSON/FHIR
   is withheld (its `data` removed) instead of quarantining the whole file.
-- **Nested base64** (base64 inside a decoded payload) is not scanned. Hex and `\uXXXX` inside plain text are
+- **Nested base64** (base64 inside a decoded payload) is not scanned. Hex inside plain text is
   not decoded (2.1 decodes XHTML, HTML entities, %-escapes and URL-safe/short base64).
 
 ## 11. Deferred work
