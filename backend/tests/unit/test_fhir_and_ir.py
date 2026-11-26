@@ -11,10 +11,7 @@ from clinveil.models.channels import Channel
 from clinveil.models.document import FieldKind, Format
 from clinveil.parsing.builder import build_document
 from clinveil.parsing.fhir import build_index
-from clinveil.privacy.pseudonym import Pseudonymizer
-from clinveil.sanitization.processors import RunStats, Sanitizer
 from clinveil.sanitization.render import render
-from clinveil.security.secrets import ReleaseSecret
 
 L = IngestLimits()
 NOTE = "Referral: Harendra Vexpal (TST/26/000101), mobile 9876543210."
@@ -129,11 +126,14 @@ def test_fhir_structure_survives_rendering_and_references_still_resolve():
 
 
 def test_sanitised_attachment_is_reencoded_not_raw():
-    doc = _doc(bundle())
-    text, _ = Sanitizer(Pseudonymizer(ReleaseSecret(b"k"), 180), RunStats()).sanitize(doc, "fhir/bundle_x.json")
+    from conftest import sanitize_documents
+
+    (text,) = sanitize_documents({"fhir/bundle_x.json": json.dumps(bundle()).encode()}).values()
     data = json.loads(text)["entry"][2]["resource"]["content"][0]["attachment"]["data"]
     decoded = base64.b64decode(data).decode()
-    assert "9876543210" not in decoded and "[PHONE]" in decoded  # transformed by the (baseline) sanitiser
+    assert "9876543210" not in decoded and "[PHONE]" in decoded
+    # the name and UHID are known from the Patient resource and propagated into the payload
+    assert "Harendra" not in decoded and "000101" not in decoded
 
 
 # --------------------------------------------------------------------------- generic IR

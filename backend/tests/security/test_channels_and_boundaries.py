@@ -93,7 +93,7 @@ def test_unexpected_exception_reason_has_no_content(synthetic_input, tmp_path, m
     from clinveil.sanitization.processors import Sanitizer
     from clinveil.security.secrets import ReleaseSecret
 
-    def boom(self, doc, out_rel):
+    def boom(self, doc, out_rel, analysis):
         raise ValueError(SYNTH_NAME)
 
     monkeypatch.setattr(Sanitizer, "sanitize", boom)

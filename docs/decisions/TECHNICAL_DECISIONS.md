@@ -106,3 +106,32 @@ Format: decision, rationale, trade-off. **[NEEDS APPROVAL]** marks a choice a hu
   original bytes. Binary or invalid payloads **quarantine the whole file**. This is simpler and safe;
   withholding only the payload (keeping FHIR valid) is a Phase 5 refinement.
 - One level only: base64 inside decoded base64 is not scanned.
+
+## D17. Deterministic, layered detection; no statistical NER model (Phase 2)
+- **Decision:** rules over semantic fields, validated patterns, contextual cues, self-authored lexicons and
+  run-wide propagation. No CRF or transformer.
+- **Why:** offline/CPU/50M-parameter limits; explainable findings; measured 0/3230 leak with 100% preserve-probe
+  survival on practice data and 0/1200 on unseen-style generated data. A small CRF remains an option if
+  hidden-data feedback shows cue-less free-text names.
+
+## D18. Two-pass pipeline with a run-local Sensitive Value Index (Phase 2)
+- Pass 1 seeds only FIELD_SEMANTICS / LABEL / VALIDATED_PATTERN evidence (≥ 0.88). Pass 2 matches token
+  sequences, phonetic full names, identifying single tokens and digit cores in every channel.
+- Files are re-read in pass 2 (flat memory) instead of keeping all documents. The index is never serialised.
+- Ablation: propagation removes the last 1.3% of practice leaks.
+
+## D19. Offsets-only findings and typed placeholders (Phase 2)
+- `Finding` holds offsets into the original field value, never the text. Placeholders are deterministic
+  `[TYPE]` tokens (bare words in filenames). JSON numbers become `0` so value types are preserved.
+
+## D20. DOB interim treatment (Phase 2)
+- DOB → `[DOB]`. FHIR `birthDate` → birth year (the only non-identifying value that keeps the element a valid
+  FHIR `date`). Phase 4 replaces both with per-patient shifted dates. No other date is touched in Phase 2.
+
+## D21. Schema labels are never redacted; values in labels are (Phase 2)
+- A header or key is rewritten only when it carries a value (ID-shaped token, confirmed name, dynamic key in a
+  mapping). Duplicated rewritten headers get a ` #n` suffix and JSON key collisions a `~n` suffix, so no data is lost.
+
+## D22. Starter regex removed (Phase 2)
+- `detection/baseline_regex.py` (starter `PATTERNS`, verbatim) is deleted. `identifiers.py` rewrites the idea
+  with validation and is recorded as "adapted" in `THIRD_PARTY_NOTICES.md` (conservative attribution).

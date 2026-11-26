@@ -150,3 +150,44 @@ def synthetic_input(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     root = tmp_path / "input"
     expected = build_synthetic_input(root)
     return root, expected
+
+
+# ----------------------------------------------------------------------------- in-process engine helpers
+def sanitize_documents(files: dict[str, bytes]) -> dict[str, str]:
+    """Run the real two-pass engine over synthetic in-memory files; returns {out_rel: rendered text}."""
+    import hashlib
+
+    from clinveil.detection.engine import DetectionEngine
+    from clinveil.detection.value_index import SensitiveValueIndex
+    from clinveil.ingestion.detect import detect
+    from clinveil.ingestion.limits import IngestLimits
+    from clinveil.parsing.builder import build_document
+    from clinveil.privacy.pseudonym import Pseudonymizer
+    from clinveil.sanitization.processors import RunStats, Sanitizer, sanitized_relpath
+    from clinveil.security.secrets import ReleaseSecret
+
+    limits = IngestLimits()
+
+    def build(rel: str, raw: bytes):
+        ext = "." + rel.rsplit(".", 1)[-1].lower() if "." in rel else ""
+        return build_document(rel, hashlib.sha256(raw).hexdigest(), len(raw), ext, detect(raw, ext, limits), limits)
+
+    index = SensitiveValueIndex()
+    seeder = DetectionEngine(None)
+    for rel, raw in sorted(files.items()):
+        seeder.seed(build(rel, raw), index)
+    engine = DetectionEngine(index)
+    sanitizer = Sanitizer(Pseudonymizer(ReleaseSecret(b"test"), 180), RunStats())
+    out, taken = {}, set()
+    for rel, raw in sorted(files.items()):
+        doc = build(rel, raw)
+        analysis = engine.analyze(doc)
+        out_rel = sanitized_relpath(doc, analysis, set(files), taken)
+        out[out_rel] = sanitizer.sanitize(doc, out_rel, analysis)[0]
+    return out
+
+
+def sanitize_text(text: str, rel: str = "notes/note.txt") -> str:
+    """Sanitise one synthetic text document with the real engine."""
+    (out,) = sanitize_documents({rel: text.encode("utf-8")}).values()
+    return out

@@ -55,6 +55,6 @@ def _rebuild(node: Any, path: tuple[Any, ...], repl: dict[str, Any]) -> Any:
         return out
     if isinstance(node, list):
         return [_rebuild(v, (*path, i), repl) for i, v in enumerate(node)]
-    if isinstance(node, str):
-        return repl.get(json_format.pointer(path), node)
+    if isinstance(node, str) or (isinstance(node, int | float) and not isinstance(node, bool)):
+        return repl.get(json_format.pointer(path), node)  # numbers holding PII are replaced too (type kept)
     return node

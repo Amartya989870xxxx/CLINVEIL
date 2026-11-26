@@ -29,7 +29,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests", "tests/generalization"]
 addopts = "-ra --strict-markers"
 markers = [
   "toolkit: needs the organiser toolkit checked out at ../organiser-toolkit (skipped otherwise)",
@@ -43,9 +43,10 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "BLE", "SIM"]
 ignore = [
+  "SIM905", # long vocabularies are written as "word word ...".split() on purpose (readable lexicons)
   "S101",  # assert is fine in tests
   "S603",  # subprocess without shell: tests run our own CLI
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S105", "S106", "S107", "S108"]
+"tests/**" = ["S105", "S106", "S107", "S108", "S311"]  # S311: seeded test-data generator

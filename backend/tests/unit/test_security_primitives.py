@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from clinveil.ingestion.discovery import InputFile
-from clinveil.models.findings import Action, Channel, EntityType, Finding, Method
+from clinveil.models.findings import Action, Channel, EntityType, Evidence, Finding
 from clinveil.security.errors import QuarantineError, safe_reason
 from clinveil.security.paths import PathEscapeError, safe_join
 from clinveil.security.secrets import MissingSecretError, ReleaseSecret
@@ -25,20 +25,30 @@ def test_missing_or_empty_secret_is_rejected():
         ReleaseSecret.from_env({"RAKSHA_SECRET": ""})
 
 
-def test_finding_repr_hides_surface():
+def test_finding_carries_offsets_never_text():
     f = Finding(
         EntityType.PATIENT_NAME,
-        Channel.CONTENT,
-        "row:0",
-        None,
+        0,
+        15,
         0.9,
-        Method.LABEL,
+        "patient_label",
+        Evidence.LABEL,
         Action.REDACT,
-        surface="Harendra Vexpal",
+        "doc",
+        "doc",
+        Channel.CONTENT,
+        "abc123def456",
     )
-    assert "Harendra" not in repr(f)
+    assert not hasattr(f, "surface") and "Harendra" not in repr(f)
+    assert f.direct and not f.quasi
     with pytest.raises(ValueError):
-        Finding(EntityType.PHONE, Channel.CONTENT, "doc", None, 1.5, Method.REGEX, Action.REDACT, surface="x")
+        Finding(
+            EntityType.PHONE, 0, 1, 1.5, "phone", Evidence.PATTERN, Action.REDACT, "doc", "doc", Channel.CONTENT, "x"
+        )
+    with pytest.raises(ValueError):
+        Finding(
+            EntityType.PHONE, 5, 1, 0.9, "phone", Evidence.PATTERN, Action.REDACT, "doc", "doc", Channel.CONTENT, "x"
+        )
 
 
 def test_input_file_repr_hides_filename():

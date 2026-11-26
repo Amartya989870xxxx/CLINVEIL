@@ -37,9 +37,11 @@ Assumption from the problem statement: *"Assume your server will be breached one
 | Logs/stdout | PII or secret | counts-only output; `ReleaseSecret`, `Finding`, `InputFile` have redacting `repr` | ✅ P0 |
 | Secret | written or logged; weak or missing key | env-only, unprintable, unpicklable; fail closed when missing; test scans every output byte for it | ✅ P0 |
 | Temp files | PII left in `TMPDIR` | none written; if ever needed, AES-GCM with an ephemeral key, deleted in `finally` | ✅ P0 (by absence) |
-| Filenames | `Discharge_Summary_<Name>_<UHID>.txt` | rename and record the mapping by hash | ⏳ P2 |
+| Filenames | `Discharge_Summary_<Name>_<UHID>.txt` | PII components renamed (`DS_NAME_MRN.txt`), collision-safe, mapping declared by input SHA-256 | ✅ P2 |
 | Base64 payloads | PII exported inside raw attachments | declared and embedded payloads decoded, cleaned, re-encoded; binary or invalid payloads quarantine the file; 16 MiB decoded cap | ✅ P1 (baseline rules) |
-| Hidden channels | keys, headers, metadata, FHIR narrative | channel-tagged IR (P1) plus channel-aware detection and propagation | ⏳ P2 |
+| Hidden channels | keys, headers, metadata, FHIR narrative, filenames | channel-aware detection, loose-channel rules, cross-channel propagation, path renaming declared by hash | ✅ P2 |
+| Value index | a run-wide map of confirmed PII is itself a breach target | memory only; refuses pickling; `repr` shows sizes only; deleted at the end of the run; never logged | ✅ P2 |
+| Findings / stats | detection metadata leaks values | `Finding` stores offsets only (no text); `logs/detection_summary.json` and `report.json` hold counts only (tested) | ✅ P2 |
 | Pseudonym inversion (A6) | unkeyed hash of the UHID | HMAC-SHA256 keyed with the release secret; no identifier material in the code | ✅ helper; ⏳ applied P3 |
 | Cross-release (A7) | stable pseudonyms or shifts across releases | every derivation keyed by the secret | ⏳ applied P3/P4 |
 | Global shift recovery (A5) | one shift for everyone | per-patient keyed shift | ⏳ applied P4 |

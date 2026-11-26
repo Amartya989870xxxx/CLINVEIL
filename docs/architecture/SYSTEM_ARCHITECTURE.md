@@ -42,7 +42,7 @@ it. Where it says "Phase N", the component is designed but not implemented yet.
 | 2 | **Guard** | escaping symlink → quarantine; `> max_file_bytes` → quarantine (streamed hash); JSON size, depth (64) and node limits | record-count limits for huge CSVs |
 | 3 | **Detect + decode** | signatures (PDF/images/archives/executables) → decode (BOM-UTF-8, UTF-16 with or without BOM, UTF-8, cp1252 with mojibake/binary plausibility) → JSON-first if `{`/`[` → XML markup → delimiter sniffing for `.csv`/`.tsv` → text; extension is supporting evidence | XML/CDA parsing |
 | 4 | **Parse** | common IR `Document{source, records[], fields[], native, fhir}`; each `Field` has address, path, record, channel, kind, label, FHIR context, base64 segments | |
-| 5 | **Detect** | regex baseline, redacts in place | layered detectors emit `Finding`s: column semantics, patterns with dose guards, labels and context, gazetteers and transliteration, propagation of known PII values, preserve rules |
+| 5 | **Detect** | Phase 2 engine: semantics → structured/free-text detectors → loose-channel rules → value-index and document-local propagation → clinical protection → resolution; typed offset-only findings | layered detectors emit `Finding`s: column semantics, patterns with dose guards, labels and context, gazetteers and transliteration, propagation of known PII values, preserve rules |
 | 6 | **Link** | none (`null`) | two-pass: evidence index over all records, strong-key edges, guarded weak edges, conservative clustering, `null` when ambiguous |
 | 7 | **Privatise** | none applied | HMAC pseudonym per cluster written *inside* each record; per-patient date shift; 5-year age bands; village → tehsil/district; PIN → 3-digit prefix; k-anonymity pass on (age band, gender, district, admission week, rare dx) |
 | 8 | **Sanitise** | IR field transformer (baseline rules on cells, JSON strings and keys, text) + renderers; base64 payloads decoded, cleaned, re-encoded | apply findings with overlap resolution; rename PII headers, keys and filenames; decode base64, clean it and re-encode or drop it; FHIR-aware rewrite |
@@ -66,6 +66,18 @@ Document
 Detectors read `fields` and never parse formats themselves. The sanitiser returns
 `address → new value`; the renderer rebuilds the file with the same structure. A base64 payload is a
 child `Field` (channel `base64`), and its parent's segment says how to re-encode it.
+
+### Detection (Phase 2)
+
+```
+Field ─► semantics (header / key path / FHIR role) ─┬─ PII-typed: structured findings over the value
+                                                     ├─ free text: identifiers · names · addresses · DOB labels
+                                                     ├─ loose channel: ID-shaped tokens + adjacent names
+                                                     └─ propagation: run-wide index (pass 1) + doc-local
+        clinical keep spans ─► resolve (threshold, protection, overlap, merge) ─► Finding (offsets only)
+```
+
+Details and measurements: [PHASE2_DETECTION.md](../evaluation/PHASE2_DETECTION.md).
 
 ### Why two passes
 Identity resolution needs evidence from **every** file before any record can be pseudonymised. A
