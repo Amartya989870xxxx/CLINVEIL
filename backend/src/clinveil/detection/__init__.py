@@ -1,14 +1,15 @@
-"""PII detection.
+"""Multilingual, context-aware PII detection (Phase 2).
 
-Target architecture (Phase 2): layered detectors that emit typed
-:class:`clinveil.models.findings.Finding` objects and never edit text:
+Layers (all operate on the Phase 1 IR, never on raw formats):
 
-1. structural: column/key semantics (header/key classifiers that survive renames)
-2. pattern: Indian IDs and phones with dose/lab-value guards
-3. label/context: ``Name:``, ``नाम:``, ``Pt.``, honorifics, S/o D/o W/o C/O
-4. gazetteer + transliteration: Latin <-> Devanagari name lists
-5. propagation: a value found as PII anywhere is PII everywhere in the release
-6. preserve rules: ``Dr. <name>``, doses (``1-0-1``, ``BD x 5 days``), eponyms, C/O complaints
-
-The only detector today is the starter's regex baseline (``baseline_regex``).
+* ``text`` / ``translit``   offset-safe tokens, normalisation, scripts, cross-script name keys
+* ``lexicon``               self-authored vocabularies (clinical, honorifics, kinship, places, names)
+* ``semantics``             header / key / path classification (renamed and Hindi labels included)
+* ``identifiers``           validated Indian identifiers (phone, Aadhaar+Verhoeff, ABHA, PAN, MRN…)
+* ``names``                 contextual patient / relative names (labels, markers, honorifics, cues)
+* ``addresses``             Indian address components
+* ``clinical``              clinical-context and doctor protection (keep spans)
+* ``value_index``           run-local index of confirmed values for cross-channel propagation
+* ``resolve``               overlap resolution, protection, merging
+* ``engine``                per-document orchestration producing typed :class:`~clinveil.models.findings.Finding` s
 """

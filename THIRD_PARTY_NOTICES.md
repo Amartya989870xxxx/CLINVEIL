@@ -31,12 +31,12 @@ header comment pointing to this notice. Files not listed (for example
 |---|---|---|
 | `backend/src/clinveil/privacy/pseudonym.py` | `pseudonym()`, `date_shift_days()`, `shift_date()`, `_ALPHABET` | derivations verbatim; wrapped in a class with an injected secret |
 | `backend/src/clinveil/privacy/generalize.py` | `age_band()` | adapted (explicit width, negative-age check) |
-| `backend/src/clinveil/detection/baseline_regex.py` | `PATTERNS`, `clean_text()` | verbatim patterns; adapted function |
+| `backend/src/clinveil/detection/identifiers.py` | the idea of the `PATTERNS` list (phone, Aadhaar, e-mail, PAN regexes) | adapted: rewritten patterns; validation, formats, Devanagari digits and all other detectors are original |
 | `backend/src/clinveil/ingestion/decoding.py` | `decode()` | adapted (BOM / UTF-16 / UTF-8 / cp1252 order; BOM-less UTF-16, plausibility validation and re-encoding are original) |
 | `backend/src/clinveil/ingestion/discovery.py` | sorted `rglob` file walk in `main()` | adapted (symlink, size and streamed-hash additions are original) |
 | `backend/src/clinveil/parsing/csv_format.py` | CSV read/write in `process_csv()` | adapted (delimiter sniffing is original) |
 | `backend/src/clinveil/parsing/json_format.py` | record detection, JSON-pointer escaping and `json.dumps` formatting in `process_json()` | adapted (FHIR detection and pointer builder are original) |
-| `backend/src/clinveil/sanitization/processors.py` | `clean_text()`, `Stats`, record enumeration of `process_csv()`/`process_json()`/`process_text()` | adapted (the IR-based field transformer and base64 re-encoding are original) |
+| `backend/src/clinveil/sanitization/processors.py` | `Stats`, record enumeration of `process_csv()`/`process_json()`/`process_text()` | adapted (finding application, placeholders, renaming and base64 re-encoding are original) |
 | `backend/src/clinveil/export/release.py` | `report.json` / `records.jsonl` construction in `main()` | adapted |
 | `backend/src/clinveil/pipeline.py` | per-file loop, quarantine handling and record filtering in `main()` | adapted (guards, content detection wiring and self-check are original) |
 | `backend/src/clinveil/security/errors.py` | quarantine-reason expression in `main()` | adapted (allowlist and type-name rule are original) |

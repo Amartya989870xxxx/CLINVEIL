@@ -35,7 +35,7 @@ evidence. P4 needs P3's clusters, because date shifts and pseudonyms are per pat
 no file in `sanitized/` is byte-identical to a broken input; parity test retired. ✅ All verified:
 `test_phase1_delta.py` pins every output difference against the starter, and the Phase 0 parity test is removed.
 
-## Phase 2: detection (priority: highest, 20 pts plus a share of privacy, about 2 days)
+## Phase 2: detection ✅ (branch `phase-2-detection`; evidence: [PHASE2_DETECTION.md](../evaluation/PHASE2_DETECTION.md))
 1. **Column and key semantics:** classify headers and keys by token features (`naam`, `name`,
    `mobile`, `contact#`, `pita/pati`, `gaon`, `mohalla`, `uhid`, `reg no`, Devanagari forms) with fuzzy
    matching, *not* exact strings (the unseen-format round renames columns).
@@ -55,6 +55,9 @@ no file in `sanitized/` is byte-identical to a broken input; parity test retired
 **Accepted when:** all `xfail` cases in `test_contextual_detection.py` pass; `check_dev` leak below 5%
 overall with deva/hinglish within 2× of latin; 0/4 canaries; medical values kept ≥ 99%; also
 re-measured on a **mutated practice copy** (renamed columns, swapped names, new date formats).
+✅ Measured: 0/3230 leaked (`check_dev.py` and official-style `dev_eval.py`), Latin/Devanagari/Hinglish 0%,
+0/4 canaries, 4855/4855 probes, 100% non-PII token retention; generated unseen-style data 0/1200 leaked.
+Not measured: a mutated copy of the *practice* data (a synthetic generator was used instead).
 
 ## Phase 3: identity resolution (15 pts plus utility coupling, about 1.5 days)
 - Evidence normalisation: digit cores of UHID/IPD/phone/Aadhaar/ABHA, names transliterated to one
@@ -95,8 +98,13 @@ utility ≥ 0.40 coupling threshold with margin; age bands always contain the tr
 - Frontend integration; judge-facing walkthrough on synthetic data only
 
 ## Next five tasks (in order)
-1. **P2: detector framework on the IR**: `Finding`s per field address, overlap resolution, typed placeholders, and the Phase 1 baseline coverage reproduced as the first detector (so the delta test keeps working)
-2. **P2: column and key semantic classifier plus structured-value PII set** (largest single recall gain: names, MRNs, addresses in registration data; includes header, key and FHIR-role cues)
-3. **P2: propagation of known PII values into notes, filenames, keys, metadata and base64 payloads** (canaries, hidden channels), plus filename renaming with the report mapping
-4. **P2: Indian ID/phone patterns with dose guards plus Latin/Devanagari label and relative rules** (turn the strict xfails into passes)
-5. **P3: strong-key linking with the pseudonym written inside records** (unlocks 15 pts, A6 and A7, and the secret-dependence check)
+1. **P3: evidence graph for linking**, built from Phase 2 findings: strong identifiers (MRN cores, phone,
+   Aadhaar, ABHA) as union edges; name keys plus a corroborator (DOB, relative, village + age) as guarded edges;
+   conflict vetoes; no transitive weak chains
+2. **P3: pseudonym insertion**: write the cluster pseudonym *inside* each record (patient_ref column, JSON
+   field, `Patient:` line, FHIR Patient.identifier) and in `records.jsonl`; add a `psn|` domain prefix
+3. **P4: per-patient date shift** of every DOB, admission, visit and lab date (FHIR-valid), preserving intervals and LOS
+4. **P4: generalisation**: age bands, village → tehsil/district, PIN → 3-digit, plus a k-anonymity check over
+   (age band, gender, district, admission week, rare diagnosis) with rare-cell suppression
+5. **P2 hardening**: mutated copy of the practice set (names swapped, labels renamed) as a second generalisation
+   benchmark; widen the district/tehsil gazetteer beyond UP

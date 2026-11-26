@@ -10,11 +10,15 @@ re-identification by an attacker holding a voter-roll-style register.
 Built by team **APEX** for **Yugaantar DevForge · Track 3 · Secret Wards**. All data handled in development and
 demonstration is **synthetic**. No real patient data is used or permitted anywhere in this project.
 
-> **Status: Phase 1 (reliable ingestion).** Content-based format detection, validated decoding,
-> bounded JSON, FHIR enumeration and a sanitisation-aware base64 pipeline feed a common internal
-> representation. Detection is still the starter's regex baseline: the engine does **not** yet do
-> real PII detection, linking or quasi-identifier handling.
-> Measured: [Phase 0 baseline](docs/evaluation/BASELINE.md) · [Phase 1 ingestion](docs/evaluation/PHASE1_INGESTION.md).
+> **Status: Phase 2 (multilingual, context-aware PII detection).** Layered detection over the Phase 1
+> representation: semantic field classification (renamed and Hindi labels), validated Indian identifiers,
+> contextual Latin/Devanagari/Hinglish names and relatives, address components, clinical and doctor
+> protection, and run-wide propagation of confirmed values into notes, filenames, keys, headers, metadata and
+> base64 payloads. On the practice data, `check_dev.py` shows 0/3230 PII visible, 0/4 canaries and 4855/4855
+> medical values kept. These are development measurements, not an official score. **Not yet done:** patient
+> linking (Phase 3) and quasi-identifier generalisation (Phase 4).
+> Measured: [Phase 0](docs/evaluation/BASELINE.md) · [Phase 1](docs/evaluation/PHASE1_INGESTION.md) ·
+> [Phase 2](docs/evaluation/PHASE2_DETECTION.md).
 > Roadmap: [docs/architecture/IMPLEMENTATION_PLAN.md](docs/architecture/IMPLEMENTATION_PLAN.md).
 
 ## The challenge
@@ -46,10 +50,10 @@ Full design: [docs/architecture/SYSTEM_ARCHITECTURE.md](docs/architecture/SYSTEM
 |---|---|---|
 | Ingestion | `clinveil.ingestion` | deterministic discovery, symlink and size guards; content-based detection (signatures, JSON-first, markup, delimiter sniffing); UTF-8/BOM/UTF-16 (incl. BOM-less)/cp1252 with mojibake and binary checks |
 | Parsing | `clinveil.parsing` | common IR (`Document`/`Field`: address, path, record, channel, kind, label); bounded JSON (depth 64, size, nodes); FHIR roles, entries and reference resolution; declared and embedded base64 payloads |
-| Detection | `clinveil.detection` | starter regex baseline only; typed `Finding` model defined |
+| Detection | `clinveil.detection` | semantics, validated identifiers, contextual names, addresses, clinical protection, value-index propagation; typed offset-only `Finding`s |
 | Linking | `clinveil.linking` | interface only, links nothing (safe: a wrong link costs more than none) |
 | Privacy | `clinveil.privacy` | HMAC pseudonyms, per-patient date shift, age bands (helpers, not yet applied) |
-| Sanitisation | `clinveil.sanitization` | IR field transformer (baseline rules) + format renderers; payloads decoded, cleaned, re-encoded |
+| Sanitisation | `clinveil.sanitization` | findings → typed placeholders; numbers → 0; FHIR birthDate → year; payloads re-encoded; PII paths renamed |
 | Export | `clinveil.export` | `report.json`, `records.jsonl`, contained writes |
 | Security | `clinveil.security` | unprintable secret, PII-free reason codes, path containment |
 | Validation | `clinveil.validation` | in-process release check before exit 0 |
@@ -116,17 +120,16 @@ that refuses to print or pickle. Findings and file handles hide their raw text f
 logged except counts. No intermediate files are written. The process refuses an output directory that
 overlaps its input. Full model: [docs/security/THREAT_MODEL.md](docs/security/THREAT_MODEL.md).
 
-## Known limitations (Phase 1)
+## Known limitations (Phase 2)
 
-- Detection is still the starter regex: about 84% of practice PII leaks (all Devanagari and Hinglish
-  names, relatives, MRNs, addresses) and all 4 practice canaries.
-- Links no records. Output therefore does not depend on the secret, and `check_submission.py` warns about this.
-- No date shifting, age banding, location generalisation or rare-value suppression is applied yet.
-- Headers, filenames and metadata are represented in the IR but not yet transformed. Base64 payloads are
-  processed with the baseline rules only.
-- A file with an unsupported (binary) attachment is quarantined whole rather than having just the payload withheld.
-- XML (incl. HL7 CDA), PDF and images are quarantined, not parsed.
-- FHIR is enumerated and its structure preserved; ids and references are not yet rewritten.
+- No patient linking yet (Phase 3). Output therefore does not depend on the secret, and `check_submission.py`
+  warns about this.
+- No date shifting, age banding, location generalisation or rare-value suppression (Phase 4). DOB is replaced
+  by `[DOB]`; FHIR `birthDate` keeps only the year so it stays valid.
+- Names with no context cue that never appear in a structured field can be missed. With cross-file
+  propagation disabled, the practice-data leak rises to 1.3%. See
+  [PHASE2_DETECTION.md](docs/evaluation/PHASE2_DETECTION.md) for all known failure cases.
+- A file with an unsupported (binary) attachment is quarantined whole. XML, PDF and images are quarantined, not parsed.
 
 ## Repository layout
 

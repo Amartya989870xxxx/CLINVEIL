@@ -57,8 +57,14 @@ def write_records(out_dir: Path, records: list[RecordRef]) -> None:
 
 
 def build_report(
-    files: list[FileEntry], records: list[RecordRef], counts: ReleaseCounts, seconds: float, peak_rss_mb: float
+    files: list[FileEntry],
+    records: list[RecordRef],
+    counts: ReleaseCounts,
+    seconds: float,
+    peak_rss_mb: float,
+    entities: dict[str, int] | None = None,
 ) -> dict:
+    """SPEC §5 report. ``entities`` counts redactions actually applied, by entity type (no values)."""
     n_san = sum(e.status == "sanitized" for e in files)
     return {
         "schema": REPORT_SCHEMA,
@@ -74,6 +80,7 @@ def build_report(
             "records_suppressed": counts.records_suppressed,
             "records_quarantined": counts.records_quarantined,
         },
+        "entities": dict(sorted((entities or {}).items())),
         "timing": {"seconds": round(seconds, 2)},
         "resources": {"peak_rss_mb": peak_rss_mb},
     }
