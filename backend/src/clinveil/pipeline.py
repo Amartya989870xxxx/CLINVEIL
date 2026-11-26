@@ -44,6 +44,7 @@ from clinveil.export.release import (
 from clinveil.ingestion.detect import detect
 from clinveil.ingestion.discovery import discover, read_input, sha256_input, unread_id
 from clinveil.ingestion.limits import IngestLimits
+from clinveil.linking.linker import LinkingStats, RecordEvidence, extract_document_evidence, resolve_identities
 from clinveil.models.records import RecordRef
 from clinveil.parsing.builder import build_document, build_placeholder
 from clinveil.privacy.pseudonym import Pseudonymizer
@@ -81,8 +82,12 @@ def _run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Polic
     limits = IngestLimits.from_policy(policy)
 
     stats = RunStats()
-    sanitizer = Sanitizer(Pseudonymizer(secret, policy.date_shift_max_days), stats)
-    index = _seed_index(input_dir, policy, limits)
+    pseudonymizer = Pseudonymizer(secret, policy.date_shift_max_days)
+    sanitizer = Sanitizer(pseudonymizer, stats)
+    index, evidence = _pass1_collect(input_dir, policy, limits)
+    link_result = resolve_identities(evidence, pseudonymizer)
+    del evidence  # raw identity evidence never outlives resolution
+    link_stats = link_result.stats
     detection_stats = DetectionStats()
     engine = DetectionEngine(index, detection_stats)
     files: list[FileEntry] = []
@@ -127,6 +132,8 @@ def _run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Polic
             analysis = engine.analyze(doc)
             out_rel = sanitized_relpath(doc, analysis, reserved, taken)
             renamed += out_rel != f.rel
+            doc_psns, doc_multi = link_result.for_document(f.rel)
+            sanitizer.set_document_pseudonyms(doc_psns, doc_multi)
             result, refs = sanitizer.sanitize(doc, out_rel, analysis)
             write_sanitized(sanitized_root, out_rel, result)
             entry.output, entry.status = f"sanitized/{out_rel}", "sanitized"
@@ -139,7 +146,7 @@ def _run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Polic
                 entry.input_sha256 = unread_id(f)
         files.append(entry)
         input_shas.append(entry.input_sha256)
-    del index  # the run-local value index never outlives the run
+    del index, link_result  # the run-local value index and link mapping never outlive the run
 
     exported = {e.output for e in files if e.output}
     records = [r for r in records if r.file in exported]
@@ -152,7 +159,7 @@ def _run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Polic
     )
     report = build_report(files, records, counts, time.monotonic() - t0, peak_rss_mb(), entities=stats.entities)
     write_report(output_dir, report)
-    _write_detection_summary(output_dir, detection_stats, stats, renamed)
+    _write_detection_summary(output_dir, detection_stats, stats, renamed, link_stats)
 
     n_san = report["counts"]["files_sanitized"]
     return RunSummary(
@@ -164,9 +171,12 @@ def _run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Polic
     )
 
 
-def _seed_index(input_dir: Path, policy: Policy, limits: IngestLimits) -> SensitiveValueIndex:
-    """Pass 1: collect high-confidence personal values from every ingestible file."""
+def _pass1_collect(
+    input_dir: Path, policy: Policy, limits: IngestLimits
+) -> tuple[SensitiveValueIndex, list[RecordEvidence]]:
+    """Pass 1: seed the run-local value index and collect normalised identity evidence per record."""
     index = SensitiveValueIndex()
+    evidence: list[RecordEvidence] = []
     seeder = DetectionEngine(None)
     for f in discover(input_dir):
         if f.broken or f.special or f.escapes_root or f.size > policy.max_file_bytes:
@@ -177,13 +187,20 @@ def _seed_index(input_dir: Path, policy: Policy, limits: IngestLimits) -> Sensit
             doc = build_document(
                 f.rel, hashlib.sha256(raw).hexdigest(), len(raw), f.path.suffix.lower(), detection, limits
             )
-            seeder.seed(doc, index)
+            analysis = seeder.seed_with_analysis(doc, index)
+            evidence.extend(extract_document_evidence(doc, analysis))
         except Exception:  # noqa: BLE001, S112 - the file is quarantined (with a reason) in pass 2
             continue
-    return index
+    return index, evidence
 
 
-def _write_detection_summary(output_dir: Path, det: DetectionStats, stats: RunStats, renamed: int) -> None:
+def _write_detection_summary(
+    output_dir: Path,
+    det: DetectionStats,
+    stats: RunStats,
+    renamed: int,
+    link_stats: LinkingStats | None = None,
+) -> None:
     """Counts only (no values, names or paths): what was found, by what, where, and what was applied."""
     summary = {
         "schema": "clinveil-detection-summary/1",
@@ -195,6 +212,8 @@ def _write_detection_summary(output_dir: Path, det: DetectionStats, stats: RunSt
         "attachments_withheld": stats.attachments_withheld,
         "files_renamed": renamed,
     }
+    if link_stats is not None:
+        summary["linking"] = link_stats.as_dict()
     logs = output_dir / "logs"
     logs.mkdir(exist_ok=True)
     (logs / "detection_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -7,7 +7,7 @@
 | Event | Yugaantar DevForge · Track 3 · **Secret Wards** |
 | Repository | https://github.com/Amartya989870xxxx/CLINVEIL (public) |
 | Official toolkit | https://github.com/Reinforce-SST/Secret-Wards-ToolKit (cloned read-only at `organiser-toolkit/`, git-ignored, commit `6c0a85a`) |
-| Last full verification of this document | 2026-11-27, against the Python 3.10 CI fix commit on top of `fab12fb` (see §2 and the changelog) |
+| Last full verification of this document | 2026-11-27, against Phase 3 identity resolution & cryptographic pseudonymisation on branch `phase-3-identity-resolution` (see §2 and the changelog) |
 
 > **How to read this file.** Every statement is marked by where it comes from: *verified* (a command was run
 > or a file was read while writing this), *documented* (taken from a repository document, not re-run), or
@@ -94,11 +94,11 @@ k-anonymity suppression (Phases 3–4).
 
 | Item | Value (verified with `git`) |
 |---|---|
-| Active branch | `phase-2.1-remediation` |
-| HEAD | the Python 3.10 CI fix commit (`dev_eval.py` `RecursionError` fix; its hash is recorded in the next update, because a commit cannot contain its own hash) |
-| Before it | `fab12fb` formatting cleanup → `fed8004` final review fixes F1–F4 → `e6021fa` handoff docs → `5a242ab` verification fixes → `683074f` remediation → `ac37504` |
-| `main` / `origin/main` | both `ac37504` "Merge pull request #2 from …/phase-2-detection" (Phase 0 + 1 + 2) |
-| Phase 2.1 pushed / merged? | Pushed up to `fab12fb` on `origin/phase-2.1-remediation` (open PR #3); the Python 3.10 CI fix commit is local and not yet pushed/merged. |
+| Active branch | `phase-3-identity-resolution` |
+| HEAD | the Phase 3 identity resolution commit (its hash is recorded in the next update, because a commit cannot contain its own hash) |
+| Before it | `9205b5a` Merge PR #3 (`phase-2.1-remediation`, incl. `a74851c` Python 3.10 CI fix) |
+| `main` / `origin/main` | both `9205b5a` "Merge pull request #3 from …/phase-2.1-remediation" (Phase 0 + 1 + 2 + 2.1) |
+| Phase 3 pushed / merged? | **No.** Exists only as a local commit on `phase-3-identity-resolution`; not pushed or merged. |
 | Remote | `origin` → https://github.com/Amartya989870xxxx/CLINVEIL.git |
 | Untracked (intentional) | `docs/research/GEMINI_PHASE2_CODE_SECURITY_AUDIT.md` |
 | Toolkit | `organiser-toolkit/` at `6c0a85a`, clean, git-ignored |
@@ -111,12 +111,8 @@ Commit history (verified):
 | `7934185` | Licensing correction: no project licence, third-party notices, team APEX (**published**) |
 | `d2c4b31` → `643c95f` | Phase 1 ingestion; merged via PR #1 |
 | `53ec8ff` → `ac37504` | Phase 2 detection; merged via PR #2 |
-| `683074f` | Phase 2.1: audit remediation (pushed on `phase-2.1-remediation`) |
-| `5a242ab` | Phase 2.1: final security-verification fixes (pushed on `phase-2.1-remediation`) |
-| `e6021fa` | docs: this handoff document (pushed on `phase-2.1-remediation`) |
-| `fed8004` | Phase 2.1: final review fixes F1–F4 (pushed on `phase-2.1-remediation`) |
-| `fab12fb` | docs: clean Phase 2.1 formatting (pushed on `phase-2.1-remediation`) |
-| (next commit) | Phase 2.1: fix Python 3.10 CI failure (`RecursionError` in `dev_eval.py`) (local) |
+| `683074f` → `a74851c` → `9205b5a` | Phase 2.1 audit remediation, F1–F4, and Python 3.10 CI fix; merged via PR #3 |
+| (next commit) | Phase 3: cross-hospital patient identity resolution and cryptographic pseudonymisation (local) |
 
 **The Gemini audit report is deliberately untracked.** It quotes practice canary and patient names. Never
 commit it; if it must be versioned, commit a *redacted* copy. Its findings and our responses are in
@@ -133,8 +129,8 @@ Legend: ✅ completed and verified · 🟡 partial · 📋 planned (not implemen
 | 0 Foundation | ✅ | `59c0ea8` (+ `7934185` licensing) |
 | 1 Ingestion + common IR | ✅ | `d2c4b31` (merged `643c95f`) |
 | 2 Contextual PII detection | ✅ (with known limits, §4) | `53ec8ff` (merged `ac37504`) |
-| 2.1 Audit remediation | ✅ PR #3 open (CI fix local) | `683074f`, `5a242ab`, `fed8004`, `fab12fb` + local CI fix |
-| 3 Identity resolution | 📋 not started (stub only) | n/a |
+| 2.1 Audit remediation | ✅ merged | `9205b5a` (PR #3) |
+| 3 Identity resolution | ✅ locally, **unpushed/unmerged** | local on `phase-3-identity-resolution` |
 | 4 Privacy transformations | 📋 not started (only `age_band()` helper exists) | n/a |
 | 5 Secure export / final validation | 🟡 partial (see below) | n/a |
 | 6 Adversarial testing / optimisation | 🟡 partial (dev evaluators and generators exist) | n/a |
@@ -245,16 +241,35 @@ Backend paths are under `backend/src/clinveil/`. Package size at time of writing
   exit 0; `check_submission.py --repo . --run` exits 0 (READY, known E5 warning).
 - **Remaining:** push CI fix commit and merge PR #3 (user decision); open issues in §4.
 
-### Phase 3: Patient identity resolution 📋 not started
-- **Objective:** same real patient → one stable keyed pseudonym across files/scripts; never merge different people.
-- **Exists today:** `linking/linker.py` is a stub (`link_record()` returns `None`); `privacy/pseudonym.py` has the
-  keyed HMAC derivations (verbatim from the starter); `RecordRef`/`records.jsonl` writing exists with `patient=None`.
-  `sanitization/processors.py` has `TODO(phase3)` for writing the pseudonym inside records.
-- **Planned (not done):** evidence graph (strong-ID union edges; name keys + corroborator as guarded edges; conflict
-  vetoes; no weak chains); pseudonym written into each record and `records.jsonl`; homonym guard. **Must use
-  `translit.name_key_strict`, never the coarse `name_key`, plus corroborating identifiers.**
-- **Acceptance (planned):** dev pairwise precision ≥ 0.98, F0.5 ≥ 0.9, 0 wrongly merged people; remove the
-  `xfail` on the different-secret test.
+### Phase 3: Patient identity resolution ✅ (local, unpushed)
+- **Objective:** link records belonging to the same real-world patient across hospitals, scripts, and formats without
+  false merges, and emit one stable keyed HMAC-SHA256 pseudonym inside each exported record and `records.jsonl`.
+- **Completed:**
+  - Modular `backend/src/clinveil/linking/` package: `models.py`, `normalize.py`, `extract.py`, `matcher.py`,
+    `cluster.py`, `pseudonyms.py`, `linker.py` (all memory-only, redacting `repr`, unpicklable, caches cleared in `finally`).
+  - Cross-script strict name normalisation (`Kiran != Karan`, `Sita != Satya`, `Alok != Alka`, schwa-only tolerance,
+    abbreviations, order inversion, split `FirstName`/`LastName` & FHIR `given`/`family` assembly) and cross-script
+    village/DOB/age/gender extraction.
+  - Tiered evidence & hard conflict vetoes: Verhoeff-valid Aadhaar (never masked), 14-digit ABHA, hospital-namespaced
+    MRNs (`Hospital-A / MRN-12345` never matches `Hospital-B / MRN-12345`), explicit conflict vetoes (disjoint global IDs,
+    gender, DOB, age > 3, incompatible full names, relative/village/district homonym guards).
+  - Bounded blocking (`MAX_ID_BLOCK=128`, `MAX_NAME_BLOCK=64`) and 3-stage conflict-aware conservative clustering
+    (Stage A global IDs, Stage B hospital-scoped MRNs, Stage C1 corroborated full names with ambiguity check, Stage C2
+    unique fragmented attachments; never naive transitive connected components).
+  - Domain-separated versioned HMAC-SHA256 pseudonyms (`psn|v1|<canonical_cluster_key>`) derived from traversal-order-
+    independent sorted evidence, with deterministic collision counter re-derivation (D8).
+  - Schema-preserving in-record pseudonym placement (CSV/TSV/JSON/FHIR/text), single-patient JSON report locator fix
+    (`parsing/json_format.py`), and pre-exit pseudonym consistency self-checks (`validation/contract.py`).
+  - Removed the Phase 3/4 `xfail` on `test_different_secret_changes_output`.
+- **Tests & validation (run 2026-11-27):** `ruff check` / `ruff format --check` exit 0 (99 files); `pytest`
+  **766 passed, 0 failed, 0 xfailed** on Python 3.10 (20.04 s), Python 3.12 (18.03 s), and Python 3.13 (20.31 s);
+  `validate_output.py` `CONTRACT OK`; `check_dev.py` `0/3230` leaked, `0/4` canaries, `4855/4855` medical values,
+  **linking precision 1.00, recall 0.99, F0.5 1.00, 0 wrong merges** (B-cubed F1 `0.9936`, language trap `96.3%`,
+  fragmented trap `100%`, homonym separation `2/2`, pseudonym consistency `772/772 = 100%`); `check_submission.py --run`
+  **`READY TO SUBMIT` with 0 warnings**; 1× runtime 2.1 s / 37.9 MB RSS; 10× (2,000 files) 22.4 s / 113.7 MB RSS.
+- **Details:** `docs/architecture/PHASE3_IDENTITY_RESOLUTION.md`, `docs/evaluation/PHASE3_IDENTITY_RESOLUTION.md`.
+- **Remaining:** push/merge decision belongs to the user; Phase 4 privacy transformations (date shifting, age bands,
+  generalisation, k-anonymity).
 
 ### Phase 4: Privacy transformations 📋 not started
 - **Exists today:** `privacy/generalize.py::age_band()` only; `config/policy.yaml` carries `age_band_years`,
@@ -295,12 +310,12 @@ Backend paths are under `backend/src/clinveil/`. Package size at time of writing
 | O5 | **Nested base64** | Base64 inside a decoded payload is not scanned. |
 | O6 | **WhatsApp sender role** | Senders are always typed RELATIVE_NAME. Redaction is unaffected; the typed placeholder/entity may be wrong. |
 | O7 | **Small gazetteer** | 198 given names and 47 surnames after removing every practice-overlapping token (contamination control). Weak evidence by design (pair 0.75; single token 0.60, never redacted). |
-| O8 | **Different-secret output** | A different `RAKSHA_SECRET` currently gives identical output because no pseudonym or date shift is written yet. `check_submission.py` warns; one strict xfail pins it. Resolved only by Phases 3/4. |
+| O8 | **Different-secret output** | **Resolved for pseudonyms in Phase 3.** Different `RAKSHA_SECRET` values now produce distinct pseudonyms in `sanitized/` and `records.jsonl`; `test_different_secret_changes_output` passes (xfail removed) and `check_submission.py --run` reports 0 warnings. Date shifting remains Phase 4. |
 | O9 | **Coarse name key collisions** | `name_key` merges e.g. Kiran/Karan by design (recall for redaction). Must not be used for linking (use `name_key_strict`). |
 | O10 | **Evidence limits** | Practice data contains none of the patterns fixed in Phase 2.1 (its output is byte-identical to Phase 2); the new protections are evidenced by team-written tests and a team-written generator, not by the sealed dataset. No official score has ever been computed. |
 | O11 | **No Project Brief PDF in the repo** | `check_submission.py` reports finding one only because a practice input contains a PDF. The 2-page brief (planned at `docs/brief/`, which does not exist yet) does not exist. |
-| O12 | **Phase 2.1 not pushed/merged** | Awaiting the user. |
-| O13 | **No linking, no date shifting, no generalisation** | Phases 3–4 are the largest score categories still at zero (§5.2). |
+| O12 | **Phase 3 not pushed/merged** | Phase 2.1 merged in `9205b5a` (PR #3); Phase 3 committed locally on `phase-3-identity-resolution`, awaiting user push/merge. |
+| O13 | **No date shifting or quasi-identifier generalisation** | Phase 4 privacy transformations (per-patient date shift, age bands, location generalisation, k-anonymity) remain to be implemented. |
 
 Other known behaviours: DOB is replaced by `[DOB]`; binary attachments are withheld (JSON member removed, or
 `[ATTACHMENT-WITHHELD]`), invalid declared base64 payloads still quarantine the file; XML/PDF/images quarantined.
@@ -448,6 +463,7 @@ Keep numbers traceable to a command you ran. A commit cannot contain its own has
 
 | Date | Agent | Entry |
 |---|---|---|
+| 2026-11-27 | Antigravity | Implemented Phase 3 (cross-hospital patient identity resolution and cryptographic pseudonymisation) on branch `phase-3-identity-resolution` from `9205b5a`. Added modular `linking/` package (`models.py`, `normalize.py`, `extract.py`, `matcher.py`, `cluster.py`, `pseudonyms.py`, `linker.py`), domain-separated versioned HMAC-SHA256 (`psn|v1|...`) with collision counter in `privacy/pseudonym.py`, single-patient JSON report locator handling in `parsing/json_format.py`, schema-preserving in-record pseudonym insertion in `sanitization/processors.py`, two-pass pipeline wiring in `pipeline.py`, pre-exit pseudonym consistency check in `validation/contract.py`, cache registration in `detection/caches.py`, and synthetic/adversarial tests (`tests/unit/test_linking.py`, `tests/integration/test_phase3_identity_resolution.py`). Removed `xfail` on `test_different_secret_changes_output`. Run: `ruff check` / `ruff format --check` exit 0 (99 files); `pytest` 766 passed / 0 xfailed across Python 3.10, 3.12, and 3.13; `validate_output.py` CONTRACT OK; `check_dev.py` 0/3230 leaked, 0/4 canaries, 4855/4855 probes, linking precision 1.00 / recall 0.99 / F0.5 1.00 / 0 wrong merges; `check_submission.py --run` READY TO SUBMIT (0 warnings); 1× 2.1 s / 37.9 MB RSS, 10× 22.4 s / 113.7 MB RSS. Not pushed or merged. Next: user review/push/merge of Phase 3, then Phase 4 privacy transformations. |
 | 2026-11-27 | Antigravity | Fixed Python 3.10 GitHub Actions CI failure blocking PR #3 (`phase-2.1-remediation` → `main`), committed locally on top of `fab12fb`. Root cause: `organiser-toolkit/dev/input/misc/deep_export.json` (1,500-level nested JSON) triggers `RecursionError` in CPython 3.10 `json.loads()`, which was uncaught in `backend/scripts/dev_eval.py` (`Parsed.__init__` only suppressed `ValueError`). Files changed: `backend/scripts/dev_eval.py`, `backend/tests/regression/test_phase2_release.py`, new `backend/tests/unit/test_dev_eval.py`, `docs/evaluation/PHASE2_REMEDIATION.md` (§9), this file. Run: `ruff check` / `ruff format --check` exit 0 (91 files); `pytest` 745 passed / 1 xfailed on Python 3.10 (`uv`), Python 3.12 (`uv`), and local `.venv` (Python 3.13); Python 3.10 `validate_output.py` (CONTRACT OK), `check_dev.py` (0/3230, 0/4 canaries, 4855/4855), `dev_eval.py` (0.0/3226, 0/8 canaries, 98.8% probes, 99.8% retention), same-secret determinism, and `check_submission.py --repo . --run` (READY, known E5 warning) all exit 0. Regressions: none. Not pushed or merged. Next: user pushes CI fix to PR #3 and merges, then Phase 3 linking. |
 | 2026-11-26 | Claude Opus 5.5 | Phase 2.1 final review fixes F1–F4, committed on top of `e6021fa` (the handoff commit created in the entry below). The review file was not present in the repo; findings taken from the task description and reproduced first (15 of 30 new tests failed on `e6021fa`, all 30 pass now). Files changed: `ingestion/discovery.py`, `pipeline.py`, `parsing/attachments.py`, `sanitization/processors.py`, `detection/views.py`, new `tests/regression/test_phase21_final_review.py`, docs (`PHASE2_REMEDIATION.md` §8, this file, `THREAT_MODEL.md`, `README.md`, `PHASE2_DETECTION.md`, `IMPLEMENTATION_PLAN.md`). Run: pytest 741 passed / 1 xfailed; ruff exit 0; `validate_output.py`, `check_dev.py`, `check_submission.py --run` exit 0 (READY, known E5 warning); practice output byte-identical to Phase 2. Regressions: none found. Outstanding decisions: push/merge; O1 symlink trade-off. Next: Phase 3 linking. |
 | 2026-11-26 | Claude Sonnet 5.5 | Created this handoff (commit `e6021fa`). Read-only with respect to production code. Verified: branch `phase-2.1-remediation`, HEAD `5a242ab`, `main`=`origin/main`=`ac37504`, Phase 2.1 unpushed; `pytest` 711 passed / 1 xfailed; `ruff check` and `ruff format --check` clean. Not re-run for this entry: the official scripts (figures in §3 come from the preceding verification session). Could not verify: official score (sealed evaluator), Phase 2 commit's own test count, Phase 0/1 numbers (taken from repo docs). The file existed beforehand as an empty untracked placeholder. |

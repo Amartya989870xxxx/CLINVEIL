@@ -43,11 +43,11 @@ it. Where it says "Phase N", the component is designed but not implemented yet.
 | 3 | **Detect + decode** | signatures (PDF/images/archives/executables) → decode (BOM-UTF-8, UTF-16 with or without BOM, UTF-8, cp1252 with mojibake/binary plausibility) → JSON-first if `{`/`[` → XML markup → delimiter sniffing for `.csv`/`.tsv` → text; extension is supporting evidence | XML/CDA parsing |
 | 4 | **Parse** | common IR `Document{source, records[], fields[], native, fhir}`; each `Field` has address, path, record, channel, kind, label, FHIR context, base64 segments | |
 | 5 | **Detect** | Phase 2 engine: semantics → structured/free-text detectors → loose-channel rules → value-index and document-local propagation → clinical protection → resolution; typed offset-only findings | layered detectors emit `Finding`s: column semantics, patterns with dose guards, labels and context, gazetteers and transliteration, propagation of known PII values, preserve rules |
-| 6 | **Link** | none (`null`) | two-pass: evidence index over all records, strong-key edges, guarded weak edges, conservative clustering, `null` when ambiguous |
-| 7 | **Privatise** | none applied | HMAC pseudonym per cluster written *inside* each record; per-patient date shift; 5-year age bands; village → tehsil/district; PIN → 3-digit prefix; k-anonymity pass on (age band, gender, district, admission week, rare dx) |
-| 8 | **Sanitise** | IR field transformer (baseline rules on cells, JSON strings and keys, text) + renderers; base64 payloads decoded, cleaned, re-encoded | apply findings with overlap resolution; rename PII headers, keys and filenames; decode base64, clean it and re-encode or drop it; FHIR-aware rewrite |
-| 9 | **Export** | starter-identical bytes | + `entities` totals in the report, renamed-file mapping, `out` locators after suppression |
-| 10 | **Self-check** | report completeness, outputs exist | + PII re-scan of side channels with the release's own known-PII set |
+| 6 | **Link** | Phase 3 (`clinveil.linking`): two-pass IR evidence extraction, hospital-scoped MRNs, hard conflict vetoes, bounded blocking, 3-stage conservative clustering, `null` when ambiguous | complete (Phase 3) |
+| 7 | **Privatise** | Phase 3: domain-separated HMAC-SHA256 (`psn\|v1\|...`) pseudonym written inside each linked record (CSV/TSV/JSON/FHIR/text) & `records.jsonl`; date shifting & generalisation in Phase 4 | + per-patient date shift; 5-year age bands; village → tehsil/district; PIN → 3-digit prefix; k-anonymity pass on rare cells |
+| 8 | **Sanitise** | IR field transformer (Phase 2.1 redactions + Phase 3 schema-preserving pseudonym placement) + renderers; base64 payloads decoded, cleaned, re-encoded; binary attachments withheld | + Phase 4 generalisation transforms |
+| 9 | **Export** | `sanitized/`, `report.json` (honest counts + `entities`), `records.jsonl` (linked pseudonyms), `logs/detection_summary.json` (safe aggregate detection + linking counts) | + `out` locators after suppression (Phase 4) |
+| 10 | **Self-check** | report completeness, outputs exist, pseudonym format & in-file consistency check (`records_linked` verified) | + PII re-scan of side channels with the release's own known-PII set |
 
 ### The common IR (Phase 1)
 

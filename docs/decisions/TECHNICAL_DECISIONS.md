@@ -45,13 +45,12 @@ Format: decision, rationale, trade-off. **[NEEDS APPROVAL]** marks a choice a hu
 - **Why:** scoring uses pairwise F0.5 (precision weighted 2×); ambiguous records cost nothing when
   `null`; homonym separation is scored. Weak evidence must never chain transitively.
 
-## D8. Pseudonym and date-shift derivation kept identical to the starter
-- `PSN-` plus 6 Crockford base32 characters from HMAC-SHA256 (30 bits). The shift is HMAC over `"shift|"+key`.
-- **Known nit:** the pseudonym derivation has no domain-separation prefix. It is harmless because cluster
-  keys never start with `shift|`, but the next change should add `"psn|"` (it changes every pseudonym,
-  so do it together with Phase 3).
-- 30 bits gives about 1e9 codes. The birthday collision probability for 10k patients is about 5%. **Phase 3 must
-  detect pseudonym collisions between distinct clusters and re-derive with a counter suffix**.
+## D8. Domain-separated, versioned HMAC-SHA256 pseudonyms with collision protection (updated in Phase 3)
+- `PSN-` plus 6 Crockford base32 characters from `HMAC-SHA256(RAKSHA_SECRET, "psn|v1|" + canonical_cluster_key)`
+  (30 bits). The date shift uses `HMAC-SHA256(RAKSHA_SECRET, "shift|" + patient_key)`.
+- Domain separation (`psn|v1|`) and deterministic counter re-derivation (`|#<attempt>`) were implemented in
+  Phase 3 (`privacy/pseudonym.py`, `linking/pseudonyms.py`), guaranteeing zero pseudonym collisions between
+  distinct clusters even at large scale and full traversal-order independence.
 
 ## D9. No intermediate files
 - **Why:** `TMPDIR` and `HOME` are scanned for PII after the run. In-memory processing fits the budget
@@ -182,3 +181,28 @@ The one residual conflict is a link whose own filename holds PII: the placeholde
 declared without the target's hash, so the validator reports one undeclared input. Privacy and no-read
 win over that error. All other reads open the verified real path with `O_NOFOLLOW | O_NONBLOCK` and require
 a regular file.
+
+## D29. Schema-preserving in-record pseudonym placement (Phase 3)
+`SPEC.md` §6 and `SCORING.md` §5 require each linked pseudonym in `records.jsonl` to appear inside the
+exported record while preserving CSV column counts, JSON key paths and value types, FHIR R4 structure, and
+text line counts. Rather than appending new columns or JSON keys (which breaks schema preservation), CLINVEIL
+places `PSN-XXXXXX` into one existing patient-identifier or patient-name string slot per linked record
+(`UHID`/`patient_ref` cell, JSON string MRN/name field, FHIR `Patient.identifier.value`, or the first `MRN`/
+`PATIENT_NAME` span in text; text-only fallback prepends `Patient: PSN-XXXXXX\n` only when no in-body span
+exists). Single-patient JSON reports containing a top-level `patient` object and sub-lists like `panels` are
+enumerated as `doc` in `parsing/json_format.py`.
+
+## D30. Hospital-scoped local MRNs and 3-stage conflict-aware clustering (Phase 3)
+Local identifiers (`MRN`, `UHID`, `IPD`, registration numbers) are namespaced by their inferred issuing
+hospital scope (`hosp:<slug>`) unless carrying a distinctive non-generic hospital prefix, so identical
+numeric/generic MRNs issued by two different hospitals (`Hospital-A / MRN-12345` vs `Hospital-B / MRN-12345`)
+never merge. Clustering runs in three bounded-block stages (validated global IDs → hospital-scoped MRNs →
+corroborated full names + unique fragmented singleton attachments), re-checking cluster-level hard conflicts
+(disjoint global IDs, gender, DOB, age > 3, incompatible names, relative/village/district homonym vetoes)
+before every merge so weak similarities can never transitively bridge conflicting clusters.
+
+## D31. Order-independent canonical cluster keys (Phase 3)
+Each resolved cluster's HMAC input key is built strictly from its sorted normalised identity evidence
+(`aadhaar` > `abha` > `abhaa` > `pan` > `ins` > `email` > `mrn` > `demo`), never from file traversal order or
+temporary cluster indices. Cleartext evidence, clusters, and canonical keys are discarded in memory right
+after pseudonym assignment and never logged or serialised.

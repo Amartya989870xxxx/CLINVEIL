@@ -28,10 +28,11 @@ from dataclasses import dataclass, field
 
 from clinveil.detection.engine import DocumentAnalysis
 from clinveil.detection.resolve import apply_spans
+from clinveil.detection.semantics import Sem
 from clinveil.ingestion.decoding import encode_text
-from clinveil.linking.linker import link_record
+from clinveil.models.channels import Channel
 from clinveil.models.document import Base64Segment, Document, Field, FieldKind, Format
-from clinveil.models.findings import Action, EntityType, Finding
+from clinveil.models.findings import DIRECT, Action, EntityType, Finding
 from clinveil.models.records import RecordRef
 from clinveil.parsing.attachments import is_declared_data_key
 from clinveil.parsing.json_format import pointer
@@ -85,21 +86,53 @@ class RunStats:
             self.generalized += 1
 
 
-def _replacement(value: str, f: Finding, *, filename: bool, fhir_date: bool) -> str:
+def _replacement(value: str, f: Finding, *, filename: bool, fhir_date: bool, pseudonym: str | None = None) -> str:
+    if pseudonym is not None:
+        return pseudonym
     if f.action is Action.GENERALIZE and fhir_date:
         return value[f.start : f.start + 4]  # birth year: still a valid FHIR date
     return (FILENAME_WORD if filename else PLACEHOLDER)[f.entity]
 
 
-def effective(value: str, findings: list[Finding], *, filename: bool = False, fhir_date: bool = False) -> list[Finding]:
+def effective(
+    value: str,
+    findings: list[Finding],
+    *,
+    filename: bool = False,
+    fhir_date: bool = False,
+    psn_target: tuple[int, str] | None = None,
+) -> list[tuple[Finding, str | None]]:
     """Findings whose replacement really changes the text (``1980`` -> ``1980`` is no transformation)."""
-    return [
-        f for f in findings if _replacement(value, f, filename=filename, fhir_date=fhir_date) != value[f.start : f.end]
+    out: list[tuple[Finding, str | None]] = []
+    for idx, f in enumerate(findings):
+        psn = psn_target[1] if (psn_target is not None and idx == psn_target[0]) else None
+        if _replacement(value, f, filename=filename, fhir_date=fhir_date, pseudonym=psn) != value[f.start : f.end]:
+            out.append((f, psn))
+    return out
+
+
+def replacement_text(
+    value: str,
+    findings: list[Finding],
+    *,
+    filename: bool = False,
+    fhir_date: bool = False,
+    psn_target: tuple[int, str] | None = None,
+) -> str:
+    spans = [
+        (
+            f.start,
+            f.end,
+            _replacement(
+                value,
+                f,
+                filename=filename,
+                fhir_date=fhir_date,
+                pseudonym=psn_target[1] if (psn_target is not None and idx == psn_target[0]) else None,
+            ),
+        )
+        for idx, f in enumerate(findings)
     ]
-
-
-def replacement_text(value: str, findings: list[Finding], *, filename: bool = False, fhir_date: bool = False) -> str:
-    spans = [(f.start, f.end, _replacement(value, f, filename=filename, fhir_date=fhir_date)) for f in findings]
     return apply_spans(value, spans)
 
 
@@ -107,13 +140,26 @@ class Sanitizer:
     def __init__(self, pseudonymizer: Pseudonymizer, stats: RunStats) -> None:
         self._psn = pseudonymizer
         self.stats = stats
+        self._pending_psns: dict[str, str] = {}
+        self._pending_multi: frozenset[str] = frozenset()
+
+    def set_document_pseudonyms(self, psns: dict[str, str], multi_locs: frozenset[str] = frozenset()) -> None:
+        """Bind resolved pseudonyms for the next ``sanitize`` call (keeps 3-arg signature intact)."""
+        self._pending_psns = psns
+        self._pending_multi = multi_locs
 
     def _reencode(self, text: str, seg: Base64Segment) -> str:
         raw = encode_text(text, seg.encoding)
         out = (base64.urlsafe_b64encode(raw) if seg.urlsafe else base64.b64encode(raw)).decode("ascii")
         return out if seg.padded else out.rstrip("=")
 
-    def _new_value(self, f: Field, analysis: DocumentAnalysis, children: dict[str, Field]) -> object:
+    def _new_value(
+        self,
+        f: Field,
+        analysis: DocumentAnalysis,
+        children: dict[str, Field],
+        psn_target: tuple[int, str] | None = None,
+    ) -> object:
         own = analysis.findings.get(f.address, [])
         if f.kind is FieldKind.JSON_NUMBER:
             # a PII number becomes 0 (type kept). A value that is ALREADY 0 is not transformed, so it is
@@ -124,13 +170,18 @@ class Sanitizer:
             return None
         value: str = f.value
         if not f.segments:
-            applied = effective(value, own, fhir_date=f.fhir is not None)
-            if not applied:
+            applied_pairs = effective(value, own, fhir_date=f.fhir is not None, psn_target=psn_target)
+            if not applied_pairs:
                 return None
+            applied = [p[0] for p in applied_pairs]
             self.stats.count(applied)
             if any(x.action is Action.GENERALIZE for x in applied):
                 self.stats.generalized_in(applied[0].document, f.record)
-            return replacement_text(value, applied, fhir_date=f.fhir is not None)
+            spans = [
+                (x.start, x.end, _replacement(value, x, filename=False, fhir_date=f.fhir is not None, pseudonym=psn))
+                for x, psn in applied_pairs
+            ]
+            return apply_spans(value, spans)
         if (
             f.kind is FieldKind.JSON_STRING
             and f.path
@@ -143,10 +194,13 @@ class Sanitizer:
             self.stats.attachments_withheld += 1
             return WITHHELD  # the whole value is a binary payload: drop the key
         spans: list[tuple[int, int, str]] = []
-        outside = [x for x in own if not any(x.start < s.end and s.start < x.end for s in f.segments)]
-        self.stats.count(outside)
-        for x in outside:
-            spans.append((x.start, x.end, PLACEHOLDER[x.entity]))
+        outside_idx = [
+            (idx, x) for idx, x in enumerate(own) if not any(x.start < s.end and s.start < x.end for s in f.segments)
+        ]
+        self.stats.count([x for _, x in outside_idx])
+        for idx, x in outside_idx:
+            psn = psn_target[1] if (psn_target is not None and idx == psn_target[0]) else None
+            spans.append((x.start, x.end, psn if psn is not None else PLACEHOLDER[x.entity]))
         for seg in f.segments:
             if seg.withheld:
                 self.stats.attachments_withheld += 1
@@ -160,18 +214,31 @@ class Sanitizer:
                 spans.append((seg.start, seg.end, self._reencode(replacement_text(child.value, child_findings), seg)))
         return apply_spans(value, spans) if spans else None
 
-    def sanitize(self, doc: Document, out_rel: str, analysis: DocumentAnalysis) -> tuple[str, list[RecordRef]]:
+    def sanitize(
+        self,
+        doc: Document,
+        out_rel: str,
+        analysis: DocumentAnalysis,
+        record_pseudonyms: dict[str, str] | None = None,
+    ) -> tuple[str, list[RecordRef]]:
         children = {f.address: f for f in doc.fields if f.kind is FieldKind.BASE64_TEXT}
+        psn_map = record_pseudonyms if record_pseudonyms is not None else self._pending_psns
+        multi_locs = self._pending_multi if record_pseudonyms is None else frozenset(psn_map)
+        self._pending_psns = {}
+        self._pending_multi = frozenset()
+        # Select one schema-preserving in-record slot per linked record to receive PSN-XXXXXX
+        psn_slots, placed_records = _select_pseudonym_slots(doc, analysis, psn_map, multi_locs)
         replacements: dict[str, object] = {}
         headers_seen: dict[str, int] = {}
         for f in doc.fields:
             if f.kind is FieldKind.FILENAME:
                 # applied by sanitized_relpath (the rename happens before sanitize): count them here
-                self.stats.count(effective(f.value, analysis.findings.get(f.address, []), filename=True))
+                eff = effective(f.value, analysis.findings.get(f.address, []), filename=True)
+                self.stats.count([p[0] for p in eff])
                 continue
             if f.kind is FieldKind.BASE64_TEXT:
                 continue
-            new = self._new_value(f, analysis, children)
+            new = self._new_value(f, analysis, children, psn_target=psn_slots.get(f.address))
             if f.kind is FieldKind.HEADER:
                 name = new if new is not None else f.value
                 n = headers_seen.get(name, 0) + 1
@@ -190,19 +257,130 @@ class Sanitizer:
                         replacements[pointer((*f.path[:-1], k))] = WITHHELD
         if doc.source.format is Format.FHIR:
             replacements.update(fhir_id_rewrites(doc, analysis))
-        return render(doc, replacements), self._records(doc, out_rel)
+        # Plain-text fallback: if a linked text document had no in-body PII span (e.g. linked via filename),
+        # prepend a standard "Patient: PSN-XXXXXX" header line so pseudonym consistency still holds.
+        if doc.source.format is Format.TEXT and "doc" in psn_map and "doc" not in placed_records:
+            current = replacements.get("doc", doc.native)
+            if isinstance(current, str):
+                replacements["doc"] = f"Patient: {psn_map['doc']}\n{current}"
+                placed_records.add("doc")
+        rendered = render(doc, replacements)
+        return rendered, self._records(doc, out_rel, psn_map, placed_records)
 
-    def _records(self, doc: Document, out_rel: str) -> list[RecordRef]:
+    def _records(
+        self,
+        doc: Document,
+        out_rel: str,
+        psn_map: dict[str, str],
+        placed_records: set[str],
+    ) -> list[RecordRef]:
         file = f"sanitized/{out_rel}"
-        if doc.source.format in (Format.CSV, Format.TSV):
-            delim = doc.source.delimiter or ","
-            refs = []
-            for i, row in enumerate(doc.native[1:] if doc.native else []):
-                key = link_record(delim.join(row))
-                # TODO(phase3): write the pseudonym INSIDE the row (patient_ref column)
-                refs.append(RecordRef(file=file, loc=f"row:{i}", patient=self._psn.pseudonym(key) if key else None))
-            return refs
-        return [RecordRef(file=file, loc=loc, patient=None) for loc in doc.records]
+        return [
+            RecordRef(
+                file=file,
+                loc=loc,
+                patient=psn_map[loc] if (loc in psn_map and loc in placed_records) else None,
+            )
+            for loc in doc.records
+        ]
+
+
+def _select_pseudonym_slots(
+    doc: Document,
+    analysis: DocumentAnalysis,
+    psn_map: dict[str, str],
+    multi_locs: frozenset[str] = frozenset(),
+) -> tuple[dict[str, tuple[int, str]], set[str]]:
+    """Pick one string field & finding span per linked record to receive the keyed pseudonym.
+
+    Preserves exact CSV column counts, JSON key paths and value types, FHIR R4 structure,
+    and text line counts by placing ``PSN-XXXXXX`` into an existing patient identifier or
+    patient name slot instead of a generic ``[MRN]`` / ``[NAME]`` placeholder.
+    """
+    if not psn_map:
+        return {}, set()
+    by_rec: dict[str, list[Field]] = {}
+    for f in doc.fields:
+        if f.record not in psn_map:
+            continue
+        if f.kind not in (FieldKind.CELL, FieldKind.JSON_STRING, FieldKind.TEXT):
+            continue
+        if f.channel is not Channel.CONTENT:
+            continue
+        by_rec.setdefault(f.record, []).append(f)
+
+    slots: dict[str, tuple[int, str]] = {}
+    placed: set[str] = set()
+    is_fhir = doc.source.format is Format.FHIR
+    for loc, psn in psn_map.items():
+        fields = by_rec.get(loc, [])
+        if not fields:
+            continue
+        allow_direct = loc in multi_locs
+        best: tuple[int, str, int] | None = None  # (priority_rank_lower_is_better, field_addr, finding_idx)
+        for f in fields:
+            findings = analysis.findings.get(f.address, ())
+            if not findings:
+                continue
+            sem = analysis.semantics.get(f.address)
+            sem_kind = sem.sem if sem is not None else Sem.UNKNOWN
+            for idx, fd in enumerate(findings):
+                if fd.detector == "fhir_id":
+                    continue  # handled by coordinated fhir_id_rewrites
+                # Skip spans inside a base64 segment
+                if f.segments and any(fd.start < s.end and s.start < fd.end for s in f.segments):
+                    continue
+                rank = _slot_rank(f, fd, sem_kind, is_fhir=is_fhir, allow_direct=allow_direct)
+                if rank is None:
+                    continue
+                if best is None or rank < best[0]:
+                    best = (rank, f.address, idx)
+                    if rank == 0:
+                        break
+            if best is not None and best[0] == 0:
+                break
+        if best is not None:
+            slots[best[1]] = (best[2], psn)
+            placed.add(loc)
+    return slots, placed
+
+
+def _slot_rank(f: Field, fd: Finding, sem_kind: Sem, *, is_fhir: bool, allow_direct: bool) -> int | None:
+    """Lower rank is preferred for placing ``PSN-XXXXXX`` inside a record."""
+    if is_fhir:
+        if f.fhir is None:
+            return None
+        if f.fhir.resource_type in ("Practitioner", "PractitionerRole", "RelatedPerson", "Organization", "Location"):
+            return None
+        if f.fhir.resource_type == "Patient":
+            if f.fhir.role == "identifier" and sem_kind is Sem.MRN:
+                return 0
+            if f.fhir.role == "identifier" and fd.entity in DIRECT:
+                return 1
+            if f.fhir.role == "name" and fd.entity is EntityType.PATIENT_NAME:
+                return 2
+            if allow_direct and fd.entity in DIRECT:
+                return 3
+            return None
+        # Contained or nested Patient inside an Encounter / nested Bundle
+        if fd.entity is EntityType.MRN:
+            return 4
+        if fd.entity is EntityType.PATIENT_NAME:
+            return 5
+        if allow_direct and fd.entity in DIRECT:
+            return 6
+        return None
+    if fd.entity is EntityType.MRN and sem_kind is Sem.MRN:
+        return 0
+    if fd.entity is EntityType.MRN:
+        return 1
+    if fd.entity is EntityType.PATIENT_NAME and sem_kind is Sem.PERSON_NAME:
+        return 2
+    if fd.entity is EntityType.PATIENT_NAME:
+        return 3
+    if allow_direct and fd.entity in DIRECT:
+        return 4
+    return None
 
 
 def sanitized_relpath(doc: Document, analysis: DocumentAnalysis, reserved: set[str], taken: set[str]) -> str:

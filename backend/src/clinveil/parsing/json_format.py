@@ -31,8 +31,24 @@ def _is_record_list(v: Any) -> bool:
     return isinstance(v, list) and bool(v) and all(isinstance(x, dict) for x in v)
 
 
+_SINGLE_PATIENT_OBJECT_KEYS = frozenset({"patient", "subject", "beneficiary", "client"})
+_MULTI_RECORD_LIST_KEYS = frozenset(
+    {"patients", "visits", "records", "results", "claims", "encounters", "admissions", "entries", "rows", "tickets"}
+)
+
+
 def is_single_document(data: Any) -> bool:
-    return not isinstance(data, dict) or is_fhir(data) or not any(_is_record_list(v) for v in data.values())
+    if not isinstance(data, dict) or is_fhir(data):
+        return True
+    list_keys = [k for k, v in data.items() if _is_record_list(v)]
+    if not list_keys:
+        return True
+    # A single-patient report (e.g. lab report with top-level "patient": {...} and "panels": [...])
+    # is one document ("doc"), not one record per sub-panel.
+    has_single_patient_obj = any(
+        k.lower() in _SINGLE_PATIENT_OBJECT_KEYS and isinstance(v, dict) for k, v in data.items()
+    )
+    return bool(has_single_patient_obj and not any(k.lower() in _MULTI_RECORD_LIST_KEYS for k in list_keys))
 
 
 def record_locators(data: Any) -> list[str]:

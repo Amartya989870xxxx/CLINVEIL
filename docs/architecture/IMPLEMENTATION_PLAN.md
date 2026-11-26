@@ -80,18 +80,15 @@ tests failed on `ac37504`). Changes:
 Deferred: E5 (secret used by Phase 3/4), E3 target hashing (required by the official contract), WhatsApp
 sender role.
 
-## Phase 3: identity resolution (15 pts plus utility coupling, about 1.5 days)
-- Evidence normalisation: digit cores of UHID/IPD/phone/Aadhaar/ABHA, names transliterated to one
-  key space, DOB, relative, village, age at encounter
-- Blocking on strong keys and phonetic name keys; pairwise scores with explicit weights
-- Clustering: strong-identifier edges union; weak (name + one corroborator) edges only attach a
-  singleton to a cluster with no conflicts; **conflicting** DOB/Aadhaar/gender/relative vetoes; no weak chains
-- Canonical cluster key = min(sorted strong evidence) → `pseudonym()`; write the pseudonym into the record
-  (`patient_ref` column, JSON field, `Patient:` line, FHIR `Patient.identifier`)
-- Homonym guard: same name with different village, age or relative never merges
+## Phase 3: identity resolution ✅ (branch `phase-3-identity-resolution`; design: [PHASE3_IDENTITY_RESOLUTION.md](PHASE3_IDENTITY_RESOLUTION.md); evidence: [PHASE3_IDENTITY_RESOLUTION.md](../evaluation/PHASE3_IDENTITY_RESOLUTION.md))
+- Modular `clinveil.linking` package (`models`, `normalize`, `extract`, `matcher`, `cluster`, `pseudonyms`, `linker`)
+- Evidence normalisation: Verhoeff-valid Aadhaar (never masked), 14-digit ABHA, hospital-namespaced MRNs, cross-script strict name keys with schwa-only tolerance, DOB with month-first hints, age, gender, cross-script village keys
+- Bounded blocking (`MAX_ID_BLOCK=128`, `MAX_NAME_BLOCK=64`) and 3-stage conflict-aware conservative clustering (no naive transitive connected components; explicit conflict vetoes; unique singleton/fragmented attachment)
+- Domain-separated versioned HMAC-SHA256 (`psn|v1|<canonical_cluster_key>`) with collision counter re-derivation (D8); schema-preserving in-record pseudonym placement (CSV/TSV/JSON/FHIR/text) and `records.jsonl` consistency self-check
 
 **Accepted when:** dev pairwise precision ≥ 0.98, F0.5 ≥ 0.9; 0 wrongly merged people; the
 different-secret test XPASSes (remove the `xfail`).
+✅ Measured: pairwise precision `1.0000`, recall `0.9871`, F0.5 `0.9974`, B-cubed F1 `0.9936`, `0` wrongly merged people, `100%` homonym separation, `100%` fragmented trap, `96.3%` language trap, `100%` pseudonym consistency (`772/772`); `test_different_secret_changes_output` passes (`xfail` removed); `check_submission.py --run` READY with 0 warnings; `766 passed` across Python 3.10/3.12/3.13; 1× 2.1 s / 37.9 MB RSS, 10× 22.4 s / 113.7 MB RSS.
 
 ## Phase 4: privacy transformation (25 pts, about 1 day)
 - Per-patient date shift on every date of that patient (all formats, incl. FHIR `dateTime` and

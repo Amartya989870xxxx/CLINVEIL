@@ -16,6 +16,7 @@ from typing import Any
 
 def _registered() -> list[Callable[..., Any]]:
     from clinveil.detection import semantics, text, translit
+    from clinveil.linking import normalize as link_norm
 
     return [
         text.normalize_token,
@@ -26,6 +27,11 @@ def _registered() -> list[Callable[..., Any]]:
         semantics.classify_label,
         semantics.label_tokens,
         semantics._fuzzy,
+        link_norm.strict_name_token,
+        link_norm.schwa_skeleton,
+        link_norm.normalize_hospital,
+        link_norm.normalize_village,
+        link_norm.normalize_district,
     ]
 
 

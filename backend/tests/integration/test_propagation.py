@@ -88,7 +88,9 @@ def test_renamed_file_is_declared_by_hash_and_records_point_to_it(tmp_path):
     assert entry["output"] == "sanitized/notes/DS_NAME_MRN.txt"
     assert (out / entry["output"]).is_file()
     recs = [json.loads(x) for x in (out / "records.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert {"file": entry["output"], "loc": "doc", "patient": None} in recs
+    note_rec = next(r for r in recs if r["file"] == entry["output"] and r["loc"] == "doc")
+    reg_rec = next(r for r in recs if r["file"] == "sanitized/reg/master.csv" and r["loc"] == "row:0")
+    assert note_rec["patient"] is not None and note_rec["patient"] == reg_rec["patient"]
 
 
 def test_report_entities_and_detection_summary_are_counts_only(tmp_path):

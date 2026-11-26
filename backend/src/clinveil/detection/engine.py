@@ -240,6 +240,10 @@ class DetectionEngine:
 
     def seed(self, doc: Document, index: SensitiveValueIndex) -> None:
         """Pass 1: add high-confidence values of ``doc`` to ``index``."""
+        self.seed_with_analysis(doc, index)
+
+    def seed_with_analysis(self, doc: Document, index: SensitiveValueIndex) -> DocumentAnalysis:
+        """Pass 1: add high-confidence values of ``doc`` to ``index`` and return its analysis."""
         analysis = self.analyze(doc, record_stats=False)
         by_addr = {f.address: f for f in doc.fields}
         for addr, findings in analysis.findings.items():
@@ -250,6 +254,7 @@ class DetectionEngine:
                     if fd.entity in NAME_TYPES and not names.looks_like_person_name(value):
                         continue  # per-type validation: only person-shaped values seed the run-wide index
                     index.add(value, fd.entity)
+        return analysis
 
     # ------------------------------------------------------------------ semantics
     def _semantics(self, doc: Document) -> dict[str, FieldSemantic]:
