@@ -7,8 +7,10 @@ name = "clinveil"
 version = "0.1.0"
 description = "Offline, deterministic de-identification engine for multilingual Indian hospital data"
 readme = "README.md"
-license = { text = "MIT" }
+# No licence is declared: original code is all rights reserved. Third-party portions:
+# see ../THIRD_PARTY_NOTICES.md. The classifier blocks accidental upload to PyPI.
 requires-python = ">=3.10"
+classifiers = ["Private :: Do Not Upload"]
 # Runtime dependencies must also be mirrored in the root requirements.txt (the
 # evaluator installs that file, not this package). Phase 0: standard library only.
 dependencies = []

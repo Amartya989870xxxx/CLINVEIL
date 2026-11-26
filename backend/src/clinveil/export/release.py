@@ -1,3 +1,5 @@
+# Portions adapted from the Secret Wards toolkit starter, Copyright (c) 2026 kartikeyajay2006,
+# MIT licence; see THIRD_PARTY_NOTICES.md. The MIT licence covers only those portions.
 """Write the three release artefacts.
 
 Byte-level formatting matches the starter exactly (``sort_keys`` records,

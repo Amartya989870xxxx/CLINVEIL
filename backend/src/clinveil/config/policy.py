@@ -1,3 +1,5 @@
+# Portions adapted from the Secret Wards toolkit starter, Copyright (c) 2026 kartikeyajay2006,
+# MIT licence; see THIRD_PARTY_NOTICES.md. The MIT licence covers only those portions.
 """Privacy policy loading.
 
 The file format is the starter's flat ``key: value`` subset of YAML, parsed without

@@ -1,3 +1,5 @@
+# Portions adapted from the Secret Wards toolkit starter, Copyright (c) 2026 kartikeyajay2006,
+# MIT licence; see THIRD_PARTY_NOTICES.md. The MIT licence covers only those portions.
 """CSV/TSV read/write that preserves delimiter and header (starter-equivalent)."""
 
 from __future__ import annotations

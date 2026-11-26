@@ -1,8 +1,14 @@
 # Team working agreement
 
-## Ownership (proposed; fill in names)
+Team: **APEX** · Product: **CLINVEIL**
 
-| Area | Owner | Paths |
+> **IP not yet settled.** No contributor licence or IP-assignment agreements exist. Each contributor keeps
+> the rights in their own work until a written agreement says otherwise. Settle this before any
+> commercialisation. See [CONTRIBUTING.md](../../CONTRIBUTING.md#contributions-and-intellectual-property).
+
+## Area leads (proposed; fill in names). Responsibility only, not IP ownership
+
+| Area | Lead | Paths |
 |---|---|---|
 | Ingestion and parsing (P1) | | `backend/src/clinveil/{ingestion,parsing}` |
 | Detection (P2) | | `backend/src/clinveil/detection`, `tests/regression/test_contextual_detection.py` |

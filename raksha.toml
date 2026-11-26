@@ -1,6 +1,8 @@
+# Portions adapted from the Secret Wards toolkit starter, Copyright (c) 2026 kartikeyajay2006,
+# MIT licence; see THIRD_PARTY_NOTICES.md. The MIT licence covers only those portions.
 # Secret Wards submission manifest (docs/SPEC.md §1 of the organiser toolkit).
 # MUST stay at the repository root. `run` executes in the repo root with NO network.
 [submission]
-name  = "CLINVEIL"
+name  = "APEX"                                             # registered team name; product name is CLINVEIL
 setup = "pip install -r requirements.txt"                    # run once, internet allowed
 run   = "python main.py --input {input} --output {output}"   # run with NO internet

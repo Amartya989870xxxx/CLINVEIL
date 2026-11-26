@@ -1,3 +1,5 @@
+# Portions adapted from the Secret Wards toolkit starter, Copyright (c) 2026 kartikeyajay2006,
+# MIT licence; see THIRD_PARTY_NOTICES.md. The MIT licence covers only those portions.
 """JSON record enumeration and RFC 6901 pointers (starter-equivalent).
 
 A document is treated as one record (``doc``) when it is a FHIR Bundle, not an

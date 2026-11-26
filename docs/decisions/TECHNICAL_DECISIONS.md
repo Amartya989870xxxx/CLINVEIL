@@ -63,8 +63,16 @@ Format: decision, rationale, trade-off. **[NEEDS APPROVAL]** marks a choice a hu
   read-only over a finished output directory (a stdlib `http.server` or FastAPI as an optional `[demo]`
   extra; neither is ever in `requirements.txt`).
 
-## D11. Licence: MIT **[NEEDS APPROVAL]**
-- Matches the organiser kit. The repository is public and the event requires original work.
+## D11. No project-wide open-source licence (decided 2026-11-26; supersedes "MIT")
+- **Decision:** the root MIT `LICENSE` from the bootstrap commit was removed. Original CLINVEIL material is
+  under default copyright (all rights reserved). Third-party portions adapted from the organiser starter
+  keep their MIT licence, reproduced verbatim in `third_party_licenses/` and mapped file by file in
+  `THIRD_PARTY_NOTICES.md`. Each adapted source file carries a header comment.
+- **Why:** the team does not want to grant general reuse, redistribution or derivative rights.
+- **Limitation:** commit `59c0ea8` was already public with an MIT `LICENSE`. History was not rewritten
+  (no amend, reset or force-push), so that commit and its licence file remain visible.
+- `backend/pyproject.toml` declares no licence and carries `Private :: Do Not Upload`, so it cannot be
+  published to PyPI by accident.
 
-## D12. Team name in `raksha.toml` is "CLINVEIL" **[NEEDS APPROVAL]**
-- `check_submission.py` rejects the placeholder. Set this to the registered team name if it differs.
+## D12. Team name in `raksha.toml` is "APEX" (decided 2026-11-26)
+- APEX is the registered team name. CLINVEIL remains the product name in code, docs and branding.

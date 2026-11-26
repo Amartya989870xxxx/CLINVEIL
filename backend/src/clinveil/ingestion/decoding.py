@@ -1,3 +1,5 @@
+# Portions adapted from the Secret Wards toolkit starter, Copyright (c) 2026 kartikeyajay2006,
+# MIT licence; see THIRD_PARTY_NOTICES.md. The MIT licence covers only those portions.
 """Byte -> text decoding (starter-equivalent).
 
 Order: UTF-8 BOM (strict), UTF-16 BOM, plain UTF-8, cp1252. cp1252 leaves only

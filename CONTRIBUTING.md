@@ -13,6 +13,21 @@
    secret into messages, exceptions, reports or test failure output. Use counts and fixed codes.
 7. **Determinism:** no time, randomness or unordered-set iteration in anything that reaches output.
 
+## Contributions and intellectual property
+
+- CLINVEIL has **no open-source licence**; original material is all rights reserved (see README).
+- **No contributor licence agreement (CLA) or IP-assignment agreement exists yet.** Unless and until one
+  is signed, each contributor keeps whatever copyright they hold in their own contributions. Submitting
+  a pull request does not, by itself, transfer ownership to the repository owner or to anyone else.
+- Before CLINVEIL is commercialised, licensed to others, or relicensed, the team must put in place
+  written agreements covering ownership or assignment of contributions, and obtain them from **every**
+  past contributor. This is a prerequisite, not a formality; get legal advice.
+- Only contribute work you have the right to contribute. Do not paste code from employers, other
+  teams, or sources whose licence you have not checked.
+- Third-party code (copied or adapted) needs the steps in
+  [THIRD_PARTY_NOTICES.md § Adding third-party material](THIRD_PARTY_NOTICES.md#adding-third-party-material)
+  before merge.
+
 ## Workflow
 
 ```bash

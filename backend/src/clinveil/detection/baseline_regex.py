@@ -1,3 +1,5 @@
+# Portions adapted from the Secret Wards toolkit starter, Copyright (c) 2026 kartikeyajay2006,
+# MIT licence; see THIRD_PARTY_NOTICES.md. The MIT licence covers only those portions.
 """The starter's regex redactor, kept verbatim as the Phase 0 baseline.
 
 Known weaknesses (measured, see docs/evaluation/BASELINE.md): no names beyond

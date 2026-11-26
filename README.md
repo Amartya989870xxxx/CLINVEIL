@@ -7,7 +7,7 @@ multilingual Indian hospital exports. It removes personal data, keeps clinical v
 intact, gives each real patient one stable keyed pseudonym across files and scripts, and resists
 re-identification by an attacker holding a voter-roll-style register.
 
-Built for **Yugaantar DevForge · Track 3 · Secret Wards**. All data handled in development and
+Built by team **APEX** for **Yugaantar DevForge · Track 3 · Secret Wards**. All data handled in development and
 demonstration is **synthetic**. No real patient data is used or permitted anywhere in this project.
 
 > **Status: Phase 0 (foundation).** The pipeline is currently a modular, hardened refactor of the
@@ -134,6 +134,25 @@ docs/      architecture/ decisions/ api-contract/ security/ evaluation/ team/
 organiser-toolkit/   official kit, git-ignored, never modified
 ```
 
-## Licence
+## Copyright and licensing
 
-MIT. See [LICENSE](LICENSE).
+CLINVEIL is a product of team **APEX** (the team name registered for Secret Wards).
+
+**No open-source licence is granted for CLINVEIL.** Original CLINVEIL material is
+Copyright © 2026 its respective contributors, all rights reserved. Making this repository
+public (as the hackathon requires) lets people view it. It does **not** grant permission to use,
+copy, modify, redistribute, sublicense or commercialise it, except where applicable law or
+GitHub's Terms of Service (which let users view and fork public repositories on GitHub) already
+allow it. Evaluation by the event organisers is covered by the hackathon's submission terms.
+
+**Third-party portions keep their own licences.** Parts of the backend are adapted from the
+organisers' Secret Wards starter (MIT, Copyright (c) 2026 kartikeyajay2006). The files concerned, the
+extent of reuse and the full MIT text are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
+[third_party_licenses/](third_party_licenses/). That MIT licence applies to those portions only.
+
+**Contributor IP:** no contributor licence or IP-assignment agreements exist yet. Contributors
+retain whatever rights they hold in their own contributions. Ownership and assignment must be settled
+in writing before CLINVEIL is commercialised (see [CONTRIBUTING.md](CONTRIBUTING.md#contributions-and-intellectual-property)).
+
+**History note:** commit `59c0ea8` (the first published commit) contained an MIT `LICENSE` file. It
+was removed in a later commit, and the published history was deliberately not rewritten.

@@ -1,3 +1,5 @@
+# Portions adapted from the Secret Wards toolkit starter, Copyright (c) 2026 kartikeyajay2006,
+# MIT licence; see THIRD_PARTY_NOTICES.md. The MIT licence covers only those portions.
 """End-to-end release pipeline: discover -> guard -> decode -> sanitise -> export -> self-check.
 
 Phase 0 is a behaviour-preserving refactor of the official starter: on any input

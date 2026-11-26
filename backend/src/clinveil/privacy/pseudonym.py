@@ -1,3 +1,5 @@
+# Portions adapted from the Secret Wards toolkit starter, Copyright (c) 2026 kartikeyajay2006,
+# MIT licence; see THIRD_PARTY_NOTICES.md. The MIT licence covers only those portions.
 """Keyed pseudonyms and per-patient date shifts (derivations identical to the starter).
 
 * ``pseudonym``: HMAC-SHA256(secret, patient_key), first 30 bits rendered as 6
