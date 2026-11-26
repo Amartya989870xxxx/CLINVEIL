@@ -1,0 +1,19 @@
+{
+  "mock": true,
+  "provenance": "Real report.json counts from the Phase 0 engine on the organiser practice dataset (synthetic), 2026-11-26. Served without a backend.",
+  "job_id": "demo-practice",
+  "engine_phase": 0,
+  "counts": {
+    "files_total": 200,
+    "files_sanitized": 195,
+    "files_quarantined": 5,
+    "records_processed": 823,
+    "identifiers_detected": 492,
+    "records_linked": 0,
+    "records_generalized": 0,
+    "records_suppressed": 0,
+    "records_quarantined": 0
+  },
+  "status_histogram": { "sanitized": 195, "quarantined": 5 },
+  "quarantine_reasons": { "unsupported_format": 3, "empty_file": 1, "JSONDecodeError": 1 }
+}

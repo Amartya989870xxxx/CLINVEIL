@@ -1,0 +1,52 @@
+# CLINVEIL CI: lint, tests, and the organiser's unmodified contract checks.
+# The organiser toolkit (incl. its practice answer key) is cloned at CI time into
+# the workspace; it is never committed to this repository.
+name: ci
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    env:
+      CLINVEIL_TOOLKIT: ${{ github.workspace }}/organiser-toolkit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Clone organiser toolkit (read-only use)
+        run: git clone --depth 1 https://github.com/Reinforce-SST/Secret-Wards-ToolKit.git organiser-toolkit
+      - name: Install (evaluator-equivalent runtime + dev tools)
+        run: |
+          pip install -r requirements.txt
+          pip install -e "backend[dev]"
+      - name: Lint
+        working-directory: backend
+        run: |
+          ruff check src tests ../main.py
+          ruff format --check src tests ../main.py
+      - name: Tests
+        working-directory: backend
+        run: pytest
+      - name: Generate a per-run secret (never committed, masked in logs)
+        run: |
+          s="$(python -c 'import secrets; print(secrets.token_hex(16))')"
+          echo "::add-mask::$s"
+          echo "RAKSHA_SECRET=$s" >> "$GITHUB_ENV"
+      - name: Run on practice data (no network needed)
+        run: python main.py --input organiser-toolkit/dev/input --output ci_output
+      - name: Official contract check
+        run: python organiser-toolkit/validate_output.py --input organiser-toolkit/dev/input --output ci_output
+      - name: Deterministic on a repeat run (same secret)
+        run: |
+          python main.py --input organiser-toolkit/dev/input --output ci_output_2
+          diff -r ci_output/sanitized ci_output_2/sanitized
+          cmp ci_output/records.jsonl ci_output_2/records.jsonl
+      - name: Practice self-check (informational)
+        run: python organiser-toolkit/check_dev.py --output ci_output

@@ -1,0 +1,98 @@
+# =============================================================================
+# CLINVEIL .gitignore. This repository is PUBLIC. When in doubt, ignore it.
+# =============================================================================
+
+# --- Organiser toolkit -------------------------------------------------------
+# A separate git repo cloned locally for testing. It contains the practice
+# answer key (dev/truth/) and attacker knowledge (dev/attacker/). Never commit.
+/organiser-toolkit/
+
+# --- Answer keys / attacker material, by name, anywhere (safety net) ---------
+truth.json
+raw_attack.json
+known_facts.jsonl
+registry.csv
+**/truth/
+**/attacker/
+/dev/
+
+# --- Secrets -----------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.secret
+secrets/
+.secrets/
+credentials.json
+*credentials*.json
+service-account*.json
+.netrc
+.claude/settings.local.json
+
+# --- Datasets and pipeline outputs (may contain synthetic or real PII) -------
+data/
+datasets/
+/input/
+/output/
+/out/
+/outputs/
+*_output/
+*_output_*/
+my_output*/
+runs/
+quarantine/
+sanitized/
+report.json
+records.jsonl
+!frontend/src/mocks/**
+!docs/api-contract/examples/**
+
+# --- Logs and temp files -----------------------------------------------------
+logs/
+*.log
+tmp/
+temp/
+*.tmp
+*.swp
+*.swo
+*~
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.python-version
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# --- Node / frontend ---------------------------------------------------------
+node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+npm-debug.log*
+.pnpm-store/
+
+# --- OS / IDE ----------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.code-workspace
+.antigravity/

@@ -1,0 +1,6 @@
+# Secret Wards submission manifest (docs/SPEC.md §1 of the organiser toolkit).
+# MUST stay at the repository root. `run` executes in the repo root with NO network.
+[submission]
+name  = "CLINVEIL"
+setup = "pip install -r requirements.txt"                    # run once, internet allowed
+run   = "python main.py --input {input} --output {output}"   # run with NO internet

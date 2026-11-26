@@ -1,0 +1,10 @@
+# CLINVEIL runtime dependencies (installed by the evaluator's `setup`).
+#
+# Phase 0: none. The pipeline uses only the Python standard library (3.10+).
+#
+# Rules for adding anything here (see docs/decisions/TECHNICAL_DECISIONS.md):
+#   * must run offline, CPU-only, within 2 CPUs / 4 GB RAM
+#   * no LLMs, no generative models, no pretrained transformer > 50M parameters
+#   * no hosted-AI client libraries (check_submission.py rejects them)
+#   * pin an upper bound, document the purpose, declare any model in README.md
+#   * dev/test tools go in backend/pyproject.toml [dev], NOT here

@@ -1,0 +1,7 @@
+# CLINVEIL privacy policy. Flat `key: value` lines (parsed without PyYAML).
+# Read by backend/src/clinveil/config/policy.py. Override with --policy or CLINVEIL_POLICY.
+
+age_band_years: 5          # ages become bands like 45-49 (the band must CONTAIN the true age)
+date_shift_max_days: 180   # every date of one patient moves by the same secret offset, never 0
+min_group_size: 5          # Phase 4: widen/suppress quasi-identifier combos rarer than this (k-anonymity)
+max_file_bytes: 268435456  # 256 MiB: larger inputs are quarantined unread (streamed hash only)
