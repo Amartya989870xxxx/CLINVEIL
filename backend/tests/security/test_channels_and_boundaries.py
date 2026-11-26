@@ -62,7 +62,9 @@ def test_overlapping_input_output_rejected(synthetic_input):
     assert _tree_hash(inp) == before
 
 
-def test_symlink_escaping_input_is_quarantined_unparsed(synthetic_input, tmp_path):
+def test_symlink_escaping_input_is_never_read(synthetic_input, tmp_path):
+    """Phase 2.1 (S1): the target is neither parsed nor hashed. The path is covered by an empty,
+    content-free placeholder declared ``suppressed`` (see PHASE2_REMEDIATION.md, S1)."""
     inp, _ = synthetic_input
     secret_file = tmp_path / "outside_secret.txt"
     secret_file.write_text(f"Name: {SYNTH_NAME}\n", encoding="utf-8")
@@ -70,10 +72,10 @@ def test_symlink_escaping_input_is_quarantined_unparsed(synthetic_input, tmp_pat
     r = run_cli(inp, tmp_path / "out")
     assert r.code == 0
     rep = json.loads((r.out / "report.json").read_text(encoding="utf-8"))
-    sha = hashlib.sha256(secret_file.read_bytes()).hexdigest()
-    entry = next(e for e in rep["files"] if e["input_sha256"] == sha)
-    assert entry["status"] == "quarantined" and entry["reason"] == "symlink_outside_input"
-    assert not (r.out / "sanitized" / "notes" / "linked.txt").exists()
+    assert hashlib.sha256(secret_file.read_bytes()).hexdigest() not in json.dumps(rep)
+    entry = next(e for e in rep["files"] if e.get("reason") == "symlink_outside_input")
+    assert entry["status"] == "suppressed" and entry["output"] == "sanitized/notes/linked.txt"
+    assert (r.out / "sanitized" / "notes" / "linked.txt").read_bytes() == b""
 
 
 def test_oversized_file_quarantined_without_reading(synthetic_input, tmp_path):

@@ -15,7 +15,15 @@ import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 
-DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+#: Every Unicode decimal digit (Devanagari, Bengali, Gurmukhi, Gujarati, Tamil, Telugu,
+#: Kannada, Malayalam, Odia, full-width, Arabic-Indic…) -> ASCII. One code point maps to
+#: one code point, so offsets computed on the translated text are valid on the original.
+UNICODE_DIGITS = {
+    cp: ord(str(unicodedata.digit(chr(cp))))
+    for cp in range(0x80, 0x20000)
+    if unicodedata.category(chr(cp)) == "Nd" and unicodedata.digit(chr(cp), None) is not None
+}
+DEVANAGARI_DIGITS = UNICODE_DIGITS  # historical name: covers all scripts since Phase 2.1
 _ZERO_WIDTH = "​‌‍⁠﻿"
 _ZW_DELETE = str.maketrans("", "", _ZERO_WIDTH)
 _HINGLISH_FUNCTION_WORDS = frozenset(
@@ -58,7 +66,7 @@ class Token:
 
 @lru_cache(maxsize=200_000)
 def normalize_token(s: str) -> str:
-    """NFKC, zero-width removal, Devanagari digits -> ASCII, nukta folding, casefold."""
+    """NFKC, zero-width removal, any-script digits -> ASCII, nukta folding, casefold."""
     s = unicodedata.normalize("NFKC", s).translate(_ZW_DELETE).translate(DEVANAGARI_DIGITS)
     s = unicodedata.normalize("NFD", s).replace("़", "")  # nukta: क़ == क for matching
     return unicodedata.normalize("NFC", s).casefold()

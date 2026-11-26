@@ -31,8 +31,8 @@ DEVA_PREFIX_TITLES = frozenset({"श्री", "श्रीमती", "सु
 DEVA_HONORIFICS = frozenset({"जी", "साहब", "दीदी", "बाबू", "अम्मा", "बहनजी"})
 #: Tokens that are part of names but identify nobody on their own (never propagated alone).
 GENERIC_NAME_TOKENS = _words(
-    "devi kumar kumari singh kaur bai lal ram prasad chand md mohd mohammad muhammad mohammed sk shaikh syed "
-    "begum bano khatoon bibi ben bhai ji kunwar rani raja nath das"
+    "devi kumar kumari singh kaur bai lal ram prasad md mohd mohammad muhammad mohammed sk shaikh syed "
+    "begum bano khatoon bibi ben bhai ji"
 ) | frozenset({"देवी", "कुमार", "कुमारी", "सिंह", "कौर", "बाई", "लाल", "मोहम्मद", "बानो", "बेगम", "ख़ातून", "खातून"})
 #: Words that look like capitalised names in clinical prose but are not people.
 NOT_NAME_WORDS = _words(
@@ -164,3 +164,74 @@ SURNAMES = _words(
     "pandit pathak prajapati rathore rao rawat saxena shah shukla sinha tripathi trivedi upadhyay vaishya "
     "varma begum"
 )
+
+
+# --------------------------------------------------------------------------- Phase 2.1 additions
+#: Modifiers and anatomy that follow "C/O" in a presenting complaint ("C/O Left knee pain").
+SEVERITY_WORDS = _words(
+    "left right bilateral unilateral severe acute chronic mild moderate recurrent intermittent sudden progressive "
+    "persistent occasional generalised generalized localised localized upper lower central epigastric retrosternal "
+    "lumbar abdominal pelvic frontal occipital lateral medial anterior posterior diffuse dull sharp burning "
+    "throbbing colicky radiating continuous high low grade episodic nocturnal early late fresh old new"
+)
+ANATOMY_WORDS = _words(
+    "knee knees chest head abdomen back neck shoulder shoulders hip hips ankle wrist elbow leg legs arm arms hand "
+    "hands foot feet eye eyes ear ears nose throat tooth teeth joint joints muscle muscles skin stomach flank loin "
+    "groin spine pedal epigastrium breast pelvis heel toe finger fingers jaw scalp face lip lips tongue gum gums "
+    "calf thigh buttock rectum anus vagina penis testis scrotum kidney liver heart lung lungs bladder ventricular "
+    "lobe lobar atrial valve artery vein"
+)
+#: Procedures and nursing actions (timeline lines such as "14:00 - Blood Transfusion started").
+PROCEDURE_WORDS = _words(
+    "blood transfusion foley catheter catheterisation catheterization dressing suction nebulisation nebulization "
+    "oxygen ryles ryle tube cannula cannulation drip physiotherapy ambulation enema ecg echo xray x-ray dialysis "
+    "intubation extubation ventilator ventilation sponging bath feed feeding infusion transfusion biopsy aspiration "
+    "endoscopy colonoscopy ultrasound scan ct mri surgery operation suturing sutures removal insertion plaster "
+    "splint traction injection vaccination immunisation immunization delivery lscs section induction monitoring "
+    "insulin glucose stain culture sensitivity smear count group grouping crossmatch cross-match sample"
+)
+#: Eponym roots: "<Root>'s <anything>" is clinical, never a possessive person name.
+EPONYM_ROOTS = _words(
+    "addison alzheimer parkinson crohn cushing wilson graves hodgkin bell down raynaud huntington paget kaposi "
+    "hashimoto guillain barre tourette meniere marfan turner klinefelter sjogren behcet kawasaki wernicke korsakoff "
+    "bright pott colles barrett burkitt ewing wilms conn hirschsprung bartholin baker osgood perthes dupuytren "
+    "erb charcot reiter still whipple wegener takayasu buerger fallot ebstein brugada kussmaul cheyne virchow "
+    "homan homans murphy mcburney romberg babinski kernig brudzinski gower gowers apgar glasgow"
+)
+#: Devanagari clinical vocabulary and function words: a name never continues into these.
+DEVA_CLINICAL_WORDS = frozenset(
+    "बुखार खांसी खाँसी दर्द निदान शिकायत इलाज दवा दवाई गोली सामान्य रक्तचाप मधुमेह उल्टी दस्त चक्कर कमजोरी "
+    "कमज़ोरी सूजन सांस साँस पेट सिर छाती जुकाम ज़ुकाम बीमारी रोग टीका इंजेक्शन जांच जाँच रिपोर्ट भर्ती छुट्टी "
+    "ऑपरेशन खून शुगर बलगम पेशाब जलन खुजली दौरा बेहोशी थकान भूख नींद प्यास घाव चोट हड्डी पीलिया टीबी "
+    "मलेरिया डेंगू टाइफाइड अस्थमा कैंसर संक्रमण उपचार परामर्श सलाह सुधार स्थिति स्थिर गंभीर हल्का तेज़ तेज "
+    "है हैं था थी थे और भी को से में ने पर गया गई गए दी दिया दिए जारी हुआ हुई हुए रहा रही रहे लिया ली "
+    "मरीज़ मरीज रोगी श्री श्रीमती डॉ डॉक्टर चिकित्सक".split()
+)
+#: Devanagari forms of Uttar Pradesh districts and major states (public administrative names; kept).
+DEVA_PLACES = frozenset(
+    "उन्नाव हरदोई लखनऊ सीतापुर बाराबंकी रायबरेली सुल्तानपुर बहराइच कानपुर आगरा अलीगढ़ अयोध्या आज़मगढ़ आजमगढ़ "
+    "बलिया बस्ती बिजनौर बदायूं बुलंदशहर चंदौली देवरिया एटा इटावा फर्रुखाबाद फ़र्रुख़ाबाद फतेहपुर फ़तेहपुर "
+    "फिरोजाबाद गाज़ियाबाद गाजियाबाद गाज़ीपुर गाजीपुर गोंडा गोरखपुर हमीरपुर हापुड़ हाथरस जालौन जौनपुर झांसी "
+    "झाँसी कन्नौज कासगंज कौशाम्बी कुशीनगर लखीमपुर ललितपुर महाराजगंज महोबा मैनपुरी मथुरा मऊ मेरठ मिर्जापुर "
+    "मुरादाबाद मुज़फ्फरनगर पीलीभीत प्रतापगढ़ प्रयागराज इलाहाबाद रामपुर सहारनपुर संभल शाहजहांपुर शामली "
+    "श्रावस्ती सिद्धार्थनगर सोनभद्र वाराणसी अमेठी अमरोहा औरैया बागपत बहराईच बलरामपुर बांदा भदोही "
+    "उत्तर प्रदेश बिहार दिल्ली मध्यप्रदेश राजस्थान उत्तराखंड".split()
+)
+#: Indian states and major non-UP cities, Latin (kept as places).
+INDIAN_PLACES = _words(
+    "bihar delhi rajasthan uttarakhand haryana punjab gujarat maharashtra karnataka kerala tamil nadu telangana "
+    "andhra odisha orissa bengal assam jharkhand chhattisgarh goa himachal kashmir madhya mumbai kolkata chennai "
+    "bengaluru bangalore hyderabad pune ahmedabad jaipur patna bhopal indore chandigarh dehradun noida gurgaon "
+    "gurugram"
+)
+
+
+def _deva_keys(words: frozenset[str]) -> frozenset[str]:
+    from clinveil.detection.text import normalize_token
+
+    return frozenset(normalize_token(w) for w in words)
+
+
+#: Administrative place names that are kept (districts, states, major cities; Latin + Devanagari).
+KNOWN_PLACES = UP_DISTRICTS | INDIAN_PLACES | _deva_keys(DEVA_PLACES)
+DEVA_CLINICAL_KEYS = _deva_keys(DEVA_CLINICAL_WORDS)

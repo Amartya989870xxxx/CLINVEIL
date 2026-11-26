@@ -27,11 +27,11 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-from clinveil.detection import addresses, clinical, identifiers, names
+from clinveil.detection import addresses, clinical, identifiers, names, views
 from clinveil.detection.clinical import KeepSpan
 from clinveil.detection.identifiers import Hit
-from clinveil.detection.lexicon import NOT_NAME_WORDS, UP_DISTRICTS
-from clinveil.detection.resolve import NAME_TYPES, resolve
+from clinveil.detection.lexicon import KNOWN_PLACES, NOT_NAME_WORDS
+from clinveil.detection.resolve import NAME_TYPES, REDACT_THRESHOLD, resolve
 from clinveil.detection.semantics import (
     _VOCAB as SCHEMA_WORDS,
 )
@@ -96,6 +96,42 @@ _EVIDENCE = {
     "gazetteer_weak": Evidence.GAZETTEER,
 }
 SEED_EVIDENCE = frozenset({Evidence.FIELD_SEMANTICS, Evidence.LABEL, Evidence.VALIDATED_PATTERN})
+FHIR_ID_EVIDENCE = "fhir_id"
+#: Field semantics below this confidence are not trusted to confirm a value as PII run-wide.
+WEAK_SEMANTIC = 0.8
+#: FHIR elements that carry codes / enumerations: preserved (only validated identifiers inside are removed).
+FHIR_CODE_KEYS = frozenset(
+    "system url status use code unit intent language version comparator contentType priority mode type "
+    "gender severity criticality clinicalStatus verificationStatus".split()
+)
+#: FHIR elements that are identifiers outside an ``identifier`` element.
+FHIR_PII_KEYS = {"subscriberId": Sem.INSURANCE_ID}
+#: What may still fire inside a preserved field.
+GUARDED_ID_DETECTORS = frozenset(
+    {
+        "phone",
+        "aadhaar",
+        "aadhaar_masked",
+        "abha_number",
+        "abha_address",
+        "email",
+        "pan",
+        "insurance",
+        "mrn_label",
+        "landline",
+    }
+)
+GUARDED_NAME_DETECTORS = frozenset(
+    {"relation_marker", "patient_label", "relative_label", "by_cue", "message_sender", "name_before_relation"}
+)
+#: Cheapest possible test that a preserved value could carry an identifier: a 5+ digit run (also in
+#: any script), two words (a cue + a name), or an e-mail / ABHA address.
+_MAY_HOLD_PII = re.compile(r"\d{5}|[^\W\d_][\W_]+[^\W\d_]|@")
+#: Contextual detections that never seed the document-local index (weak or ambiguous cues).
+LOCAL_SEED_EXCLUDED = frozenset(
+    {"gazetteer", "gazetteer_weak", "care_of", "possessive", "timeline", "loose_adjacent_name"}
+)
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 SEED_THRESHOLD = 0.88
 _LOOSE = frozenset({Channel.HEADER, Channel.KEY, Channel.FILENAME, Channel.METADATA})
 _PERSON_SHAPED_KEY = re.compile(
@@ -112,7 +148,7 @@ DOB_LABEL_RE = re.compile(
 )
 NEAR_PHONE_RE = re.compile(
     r"(?P<n>(?:[A-Z][a-z]+|[A-Z]{2,})(?:[ ](?:[A-Z][a-z]+|[A-Z]{2,})){0,2})[ ]*(?:\([^)\n]{0,40}\)[ ]*)?,?[ ]*"
-    r"(?P<kw>(?:mob(?:ile)?|ph(?:one)?|tel|contact|cell|call)\.?[ ]*[:\-]?[ ]*)?$"
+    r"(?P<kw>(?i:mob(?:ile)?|ph(?:one)?|tel|contact|cell|call)\.?[ ]*[:\-]?[ ]*)?$"
 )
 
 
@@ -128,6 +164,7 @@ class DetectionStats:
     languages: Counter = field(default_factory=Counter)
     evidence: Counter = field(default_factory=Counter)
     protected: int = 0  # candidates dropped by clinical/doctor protection
+    below_threshold: int = 0  # candidates under the redaction threshold (kept, never applied)
     clinical_conflicts: int = 0
     files_with_pii: int = 0
 
@@ -140,6 +177,7 @@ class DetectionStats:
             "by_language": dict(sorted(self.languages.items())),
             "by_evidence": dict(sorted(self.evidence.items())),
             "protected_by_clinical_rules": self.protected,
+            "candidates_below_threshold": self.below_threshold,
             "clinical_conflicts_overridden": self.clinical_conflicts,
             "files_with_pii": self.files_with_pii,
         }
@@ -167,7 +205,22 @@ class DetectionEngine:
             text = self._text_of(f)
             if text is None:
                 continue
-            hits, keeps = self._detect_field(doc, f, sems.get(f.address, UNKNOWN), text)
+            if f.segments:
+                # a base64 payload is analysed as its own BASE64_TEXT child; the parent keeps only the
+                # text around it, for detection AND for document-local propagation (no stray hits inside)
+                masked = list(text)
+                for seg in f.segments:
+                    masked[seg.start : seg.end] = " " * (seg.end - seg.start)
+                text = "".join(masked)
+            view = views.decoded_view(text)
+            if view is None:
+                hits, keeps = self._detect_field(doc, f, sems.get(f.address, UNKNOWN), text)
+            else:  # markup / HTML entities / %-escapes: detect on the decoded text, map back exactly
+                vhits, vkeeps = self._detect_field(doc, f, sems.get(f.address, UNKNOWN), view.text)
+                hits = [
+                    Hit(a, b, h.entity, h.confidence, h.detector) for h in vhits for a, b in view.spans(h.start, h.end)
+                ]
+                keeps = [KeepSpan(*view.span(k.start, k.end), k.kind) for k in vkeeps]
             raw[f.address] = (hits, keeps, text)
         self._doc_local_propagation(doc, raw, sems)
         out: dict[str, list[Finding]] = {}
@@ -176,6 +229,7 @@ class DetectionEngine:
             resolved, protected = resolve(hits, keeps, text)
             if record_stats:
                 self.stats.protected += protected
+                self.stats.below_threshold += sum(h.confidence < REDACT_THRESHOLD for h in hits)
             if not resolved:
                 continue
             f = by_addr[addr]
@@ -192,7 +246,10 @@ class DetectionEngine:
             text = self._text_of(by_addr[addr])
             for fd in findings:
                 if fd.evidence in SEED_EVIDENCE and fd.confidence >= SEED_THRESHOLD and text is not None:
-                    index.add(text[fd.start : fd.end], fd.entity)
+                    value = views.decode_slice(text[fd.start : fd.end])
+                    if fd.entity in NAME_TYPES and not names.looks_like_person_name(value):
+                        continue  # per-type validation: only person-shaped values seed the run-wide index
+                    index.add(value, fd.entity)
 
     # ------------------------------------------------------------------ semantics
     def _semantics(self, doc: Document) -> dict[str, FieldSemantic]:
@@ -245,8 +302,12 @@ class DetectionEngine:
         el, role, rt = ctx.element, ctx.role, ctx.resource_type
         parent = _parent_obj(doc.native, f.path)
         key = f.path[-1] if f.path and isinstance(f.path[-1], str) else ""
-        if role == "reference" or key in ("id", "fullUrl", "resourceType", "url", "status", "system", "use"):
+        if key == "resourceType":
             return FieldSemantic(Sem.NON_PII_ID, 1.0, "fhir_structural")
+        if role == "reference" or key in ("id", "fullUrl"):
+            return FieldSemantic(Sem.NON_PII_ID, 1.0, FHIR_ID_EVIDENCE)  # rewritten consistently if identifying
+        if key in FHIR_CODE_KEYS:
+            return FieldSemantic(Sem.NON_PII_ID, 0.95, "fhir_code")
         if role == "narrative":
             return FREE_TEXT
         if role == "attachment":
@@ -315,9 +376,11 @@ class DetectionEngine:
             if "name" in url:
                 rel = any(w in url for w in ("mother", "father", "spouse", "guardian", "husband", "wife", "relative"))
                 return FieldSemantic(Sem.RELATIVE_NAME if rel else Sem.PERSON_NAME, 0.92, "fhir_name_extension")
-        if role == "meta_source":
-            return UNKNOWN
-        return FieldSemantic(Sem.CLINICAL, 0.6, "fhir_other") if rt not in (None, "Patient") else UNKNOWN
+        if key in FHIR_PII_KEYS:
+            return FieldSemantic(FHIR_PII_KEYS[key], 0.95, f"fhir_{key}")
+        # everything else (note.text, conclusion, title, description, valueString, comment, …) in ANY
+        # resource is free text: detectors run, clinical keep spans protect the medical content
+        return UNKNOWN
 
     # ------------------------------------------------------------------ detection per field
     @staticmethod
@@ -332,18 +395,20 @@ class DetectionEngine:
         if f.kind is FieldKind.HEADER or f.kind is FieldKind.FILENAME or f.kind is FieldKind.JSON_KEY:
             return self._loose_field(doc, f, text), []
         channel = f.channel
-        if sem.sem in PRESERVED and f.kind is not FieldKind.BASE64_TEXT:
+        if sem.evidence == "fhir_structural":
             return [], []
-        if f.segments:
-            # the payload is analysed as its own BASE64_TEXT child; only the text around it here
-            masked = list(text)
-            for seg in f.segments:
-                masked[seg.start : seg.end] = " " * (seg.end - seg.start)
-            text = "".join(masked)
+        if sem.evidence == FHIR_ID_EVIDENCE:
+            return self._fhir_id_hits(text, channel), []
+        if sem.sem in PRESERVED and f.kind is not FieldKind.BASE64_TEXT:
+            return self._guarded(text, channel, sem)
         if sem.sem in STRUCTURED_PII and f.kind is not FieldKind.BASE64_TEXT:
             structured = self._structured(text, sem)
             if structured is not None:
                 hits = structured
+                if sem.confidence < WEAK_SEMANTIC:
+                    # weakly classified field ("family", "given", "client" alone): redact in place, but the
+                    # value is not confirmed PII, so it must never seed the run-wide index (P2)
+                    hits = [Hit(h.start, h.end, h.entity, h.confidence, "field_weak") for h in hits]
                 if self.index is not None:
                     hits = hits + self.index.match(text, channel)
                 return hits, []
@@ -380,7 +445,11 @@ class DetectionEngine:
         if s in (Sem.ADDRESS, Sem.LOCALITY) and ("," in text or "\n" in text or s is Sem.ADDRESS):
             hits = addresses.address_components(text, base_conf=0.9)
             nh, _ = names.detect_names(text)
-            hits += [h for h in nh if h.detector in ("relation_marker", "relative_label", "patient_label", "title")]
+            hits += [
+                h
+                for h in nh
+                if h.detector in ("relation_marker", "care_of", "relative_label", "patient_label", "title")
+            ]
             if not hits and not _is_place_only(text):
                 hits = [Hit(lead, end, E.LOCALITY, 0.85, "field")]
             return hits
@@ -388,6 +457,51 @@ class DetectionEngine:
             return []
         ent = _SEM_ENTITY.get(s)
         return [Hit(lead, end, ent, conf, "field")] if ent is not None and end > lead else None
+
+    def _guarded(self, text: str, channel: Channel, sem: FieldSemantic) -> tuple[list[Hit], list[KeepSpan]]:
+        """A *preserved* field (clinical, doctor, relation, geography, dates, non-PII IDs).
+
+        Its value is kept, but personal data embedded in it is still removed: validated
+        identifiers, names behind explicit cues (``S/o``, ``brought by``, ``Name:``), names
+        written next to a phone number, and values already confirmed elsewhere in the run.
+        Doctor/staff/organisation fields never take name propagation (a doctor may share a
+        patient's first name).
+        """
+        if is_empty_value(text) or not _MAY_HOLD_PII.search(text):
+            return [], []  # one word or a short number ("Normal", "45", "M"): nothing can hide in it
+        keeps = clinical.keep_spans(text)
+        hits = [h for h in identifiers.find_identifiers(text) if h.detector in GUARDED_ID_DETECTORS]
+        name_hits, name_keeps = names.detect_names(text)
+        keeps += name_keeps
+        hits += [h for h in name_hits if h.detector in GUARDED_NAME_DETECTORS]
+        hits += _names_near_phones(text, hits)
+        if self.index is not None:
+            people = sem.sem in (Sem.DOCTOR_NAME, Sem.STAFF, Sem.ORGANIZATION)
+            hits += [
+                h
+                for h in self.index.match(text, channel)
+                if not (people and h.entity in NAME_TYPES)
+                and h.detector != "propagation_token"
+                # a visit/sample/bill number may share a short digit core with some MRN: only the
+                # exact MRN phrase or a validated phone/Aadhaar/ABHA digit run counts in here
+                and not (h.detector == "propagation_digits" and h.entity is E.MRN)
+            ]
+        return hits, keeps
+
+    def _fhir_id_hits(self, text: str, channel: Channel) -> list[Hit]:
+        """FHIR ``id`` / ``fullUrl`` / ``reference``: flag the id segment when it carries an identifier.
+
+        The sanitiser then rewrites the id, the entry's ``fullUrl`` and every reference to it
+        together (``rid-<entry>``), so the Bundle still resolves.
+        """
+        seg_start = max(text.rfind("/"), text.rfind(":")) + 1
+        seg = text[seg_start:]
+        if not seg or seg.startswith("#") or _UUID_RE.fullmatch(seg):
+            return []
+        identifying = bool(re.search(r"\d{5,}", seg) or _ID_TOKEN_RE.search(seg))
+        if not identifying and self.index is not None:
+            identifying = any(h.start >= seg_start for h in self.index.match(text, Channel.KEY))
+        return [Hit(seg_start, len(text), E.MRN, 0.85, "fhir_id")] if identifying else []
 
     def _free_text(self, text: str, channel: Channel) -> tuple[list[Hit], list[KeepSpan]]:
         keeps = clinical.keep_spans(text)
@@ -438,10 +552,16 @@ class DetectionEngine:
         self, doc: Document, raw: dict[str, tuple[list[Hit], list[KeepSpan], str]], sems: dict[str, FieldSemantic]
     ) -> None:
         local = SensitiveValueIndex()
-        for hits, _keeps, text in raw.values():
+        for hits, keeps, text in raw.values():
+            doctor = [k for k in keeps if k.kind == "doctor"]
             for h in hits:
-                if h.entity in NAME_TYPES and h.confidence >= 0.8 and h.detector not in ("gazetteer", "gazetteer_weak"):
-                    local.add(text[h.start : h.end], h.entity)
+                if (
+                    h.entity in NAME_TYPES
+                    and h.confidence >= 0.8
+                    and h.detector not in LOCAL_SEED_EXCLUDED
+                    and not any(k.start < h.end and h.start < k.end for k in doctor)
+                ):
+                    local.add(views.decode_slice(text[h.start : h.end]), h.entity)
         if not len(local):
             return
         by_addr = {f.address: f for f in doc.fields}
@@ -451,8 +571,10 @@ class DetectionEngine:
                 continue
             if f.kind in (FieldKind.JSON_KEY, FieldKind.HEADER) and not hits:
                 continue  # schema labels stay untouched
-            for h in local.match(text, f.channel):
-                hits.append(Hit(h.start, h.end, h.entity, min(h.confidence, 0.8), "propagation_local"))
+            view = views.decoded_view(text)
+            for h in local.match(view.text if view else text, f.channel):
+                for a, b in view.spans(h.start, h.end) if view else [(h.start, h.end)]:
+                    hits.append(Hit(a, b, h.entity, min(h.confidence, 0.8), "propagation_local"))
 
     # ------------------------------------------------------------------ findings and statistics
     def _finding(self, doc: Document, f: Field, h: Hit, conflict: bool) -> Finding:
@@ -521,7 +643,7 @@ def _reference_target(doc: Document, obj_path: tuple[Any, ...]) -> str | None:
 
 def _is_place_only(text: str) -> bool:
     keys = normalize_phrase(text)
-    return not keys or " ".join(keys) in UP_DISTRICTS
+    return not keys or " ".join(keys) in KNOWN_PLACES
 
 
 def _names_near_phones(text: str, hits: list[Hit]) -> list[Hit]:
@@ -537,10 +659,37 @@ def _names_near_phones(text: str, hits: list[Hit]) -> list[Hit]:
         if any(w.casefold() in NOT_NAME_WORDS for w in words):
             continue
         if len(words) >= 2 or m.group("kw"):
-            out.append(
-                Hit(window_start + m.start("n"), window_start + m.end("n"), E.RELATIVE_NAME, 0.8, "phone_adjacent")
-            )
+            s, e = window_start + m.start("n"), window_start + m.end("n")
+            out.append(Hit(s, e, _phone_owner_role(text, s, e), 0.8, "phone_adjacent"))
     return out
+
+
+_RELATIVE_CUE = re.compile(
+    r"(?i)\b(?:attendant|relative|visitor|guardian|wife|husband|son|daughter|father|mother|brother|sister|"
+    r"caretaker|escort|bystander|kin|nok|informant|spouse|contact\s+person|emergency\s+contact|"
+    r"[SDWC]\s?/\s?O|brought\s+by|called\s+by|accompanied\s+by)\b"
+)
+_PATIENT_CUE = re.compile(
+    r"(?i)\b(?:patient|pt|admitted|discharged|registered|presented|complains|c/o|aged?|yrs?|years?)\b"
+)
+
+
+def _phone_owner_role(text: str, s: int, e: int) -> EntityType:
+    """Who owns a phone number written next to a name: decided by the cues around it.
+
+    Relative cues (``Attendant``, ``W/o``, ``(relative, bed 4)``, ``brought by``) win; a name
+    that opens its line or is followed by patient cues (``admitted``, ``aged 45``) is the
+    patient; otherwise the conservative default is RELATIVE (both are redacted alike).
+    """
+    line_start = text.rfind("\n", 0, s) + 1
+    line_end = text.find("\n", e)
+    before = text[line_start:s]
+    after = text[e : line_end if line_end >= 0 else len(text)][:80]
+    if _RELATIVE_CUE.search(before[-40:]) or _RELATIVE_CUE.search(after[:40]):
+        return E.RELATIVE_NAME
+    if _PATIENT_CUE.search(before[-30:]) or _PATIENT_CUE.search(after) or not before.strip(" -:\t"):
+        return E.PATIENT_NAME
+    return E.RELATIVE_NAME
 
 
 _ID_TOKEN_RE = re.compile(
@@ -549,10 +698,23 @@ _ID_TOKEN_RE = re.compile(
 )
 
 
+def _is_date_digits(d: str) -> bool:
+    """``YYYYMMDD`` / ``YYYYMM`` / ``YYMMDD`` digit runs that form a valid calendar date (a batch or file date)."""
+    if len(d) == 8 and d[:2] in ("19", "20"):
+        return 1 <= int(d[4:6]) <= 12 and 1 <= int(d[6:8]) <= 31
+    if len(d) == 6 and d[:2] in ("19", "20"):
+        return 1 <= int(d[4:6]) <= 12
+    return False
+
+
 def _loose_hits(text: str, hits: list[Hit]) -> list[Hit]:
     """Headers/keys/filenames/metadata: ID-shaped tokens are values; adjacent capitalised words are names."""
     out: list[Hit] = []
-    ids = [(m.start(), m.end()) for m in _ID_TOKEN_RE.finditer(text)]
+    ids = [
+        (m.start(), m.end())
+        for m in _ID_TOKEN_RE.finditer(text)
+        if not _is_date_digits(re.findall(r"\d+", m.group())[-1])  # "LAB-20261015", "Batch-202601"
+    ]
     toks = tokenize(text)
     for i, t in enumerate(toks):
         if t.key.isdigit() and len(t.key) >= 6 and not re.fullmatch(r"(?:19|20)\d{2}(?:0[1-9]|1[0-2])?", t.key):
@@ -579,7 +741,7 @@ def _loose_hits(text: str, hits: list[Hit]) -> list[Hit]:
                     t.text.isalpha()
                     and t.text[:1].isupper()
                     and t.key not in NOT_NAME_WORDS
-                    and t.key not in UP_DISTRICTS
+                    and t.key not in KNOWN_PLACES
                     and len(t.key) >= 3
                 ):
                     break

@@ -70,14 +70,24 @@ child `Field` (channel `base64`), and its parent's segment says how to re-encode
 ### Detection (Phase 2)
 
 ```
-Field ─► semantics (header / key path / FHIR role) ─┬─ PII-typed: structured findings over the value
+Field ─► decoded view (2.1: XHTML tags, HTML entities, %-escapes; exact offset map back; None if plain)
+      ─► semantics (header / key path / FHIR role) ─┬─ PII-typed: structured findings over the value
+                                                     ├─ preserved (2.1: guarded): value kept, but validated IDs,
+                                                     │   cue-based names and confirmed values inside are removed
                                                      ├─ free text: identifiers · names · addresses · DOB labels
                                                      ├─ loose channel: ID-shaped tokens + adjacent names
+                                                     ├─ FHIR id/fullUrl/reference (2.1): flagged id segments
                                                      └─ propagation: run-wide index (pass 1) + doc-local
-        clinical keep spans ─► resolve (threshold, protection, overlap, merge) ─► Finding (offsets only)
+        clinical keep spans ─► resolve (threshold, protection, overlap, merge; O(n log n)) ─► Finding
 ```
 
-Details and measurements: [PHASE2_DETECTION.md](../evaluation/PHASE2_DETECTION.md).
+Only `resourceType` is skipped outright. No semantic switches detection off any more. Since Phase 2.1
+the sanitiser also rewrites identifying FHIR ids together with their `fullUrl`s and references
+(`rid-<entry>`), and withholds binary attachments (`data` removed) instead of quarantining the file. Memo
+caches are cleared when a run ends (`detection/caches.py`).
+
+Details and measurements: [PHASE2_DETECTION.md](../evaluation/PHASE2_DETECTION.md) and
+[PHASE2_REMEDIATION.md](../evaluation/PHASE2_REMEDIATION.md).
 
 ### Why two passes
 Identity resolution needs evidence from **every** file before any record can be pseudonymised. A
@@ -97,7 +107,7 @@ lives only in memory and is never serialised (see the threat model).
 
 | Boundary | Rule |
 |---|---|
-| input → process | never follow a symlink out of the root; cap sizes; content-based detection (the extension is only evidence); bounded JSON |
+| input → process | never open a symlink target outside the root (not even to hash it: an empty placeholder is declared `suppressed`); every read opens the verified real path inside the root with `O_NOFOLLOW \| O_NONBLOCK` and requires a regular file; broken symlinks and FIFOs/devices are reported unopened; cap sizes; content-based detection (the extension is only evidence); bounded JSON |
 | process → release | only sanitised content crosses; quarantined files cross as a hash and a reason code only |
 | process → stdout/stderr/logs | counts and fixed strings only; no tracebacks (they can contain values) |
 | secret | env → `ReleaseSecret` → HMAC only; refuses `repr`, `str`, format and pickle |
@@ -116,6 +126,7 @@ lives only in memory and is never serialised (see the threat model).
 
 Budget: 2 CPUs, 4 GB RSS for the whole process tree, 15 minutes (`time_good_s` = 60 s on the standard
 profile). Phase 1 handles the 200-file practice set in 0.31 s at 27 MB peak RSS, and a 10× replica
-(2,000 files) in 2.76 s at 34 MB (linear time, flat memory). Design rules:
+(2,000 files) in 2.76 s at 34 MB (linear time, flat memory). With Phase 2.1 detection: 2.1 s / 32 MB
+(200 files) and 19.8 s / 39 MB (2,000 files). Design rules:
 stream-hash oversized files, keep one decoded copy per file, block-based linking (no O(n²)
 all-pairs), and use no multiprocessing unless it is measured to help, because a second process doubles RSS.

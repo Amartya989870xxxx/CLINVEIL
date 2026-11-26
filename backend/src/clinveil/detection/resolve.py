@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 from dataclasses import dataclass
 
 from clinveil.detection.clinical import KeepSpan
@@ -40,15 +41,26 @@ def _overlaps(a0: int, a1: int, b0: int, b1: int) -> bool:
 
 
 def resolve(hits: list[Hit], keeps: list[KeepSpan], text: str) -> tuple[list[Resolved], int]:
-    """Return accepted findings (sorted by start) and the number dropped by clinical protection."""
+    """Return accepted findings (sorted by start) and the number dropped by clinical protection.
+
+    ``O((H + K) log(H + K))``: keep spans are sorted once and queried by bisection (a hit
+    only looks at keeps that start before it ends and are long enough to reach it), and
+    accepted spans are kept in a sorted, non-overlapping list, so an overlap test is one
+    bisection instead of a scan of everything accepted so far.
+    """
     protected = 0
     cands: list[Resolved] = []
+    ks = sorted(keeps, key=lambda k: (k.start, k.end))
+    k_starts = [k.start for k in ks]
+    max_len = max((k.end - k.start for k in ks), default=0)
     for h in hits:
         if h.confidence < REDACT_THRESHOLD or h.end <= h.start:
             continue
         conflict = False
-        if h.entity in NAME_TYPES:
-            hit_keeps = [k for k in keeps if _overlaps(h.start, h.end, k.start, k.end)]
+        if h.entity in NAME_TYPES and ks:
+            hi = bisect_left(k_starts, h.end)  # keeps starting before the hit ends
+            lo = bisect_left(k_starts, h.start - max_len)  # earlier ones cannot reach the hit
+            hit_keeps = [k for k in ks[lo:hi] if k.end > h.start]
             if any(k.kind == "doctor" for k in hit_keeps):
                 protected += 1
                 continue
@@ -60,9 +72,15 @@ def resolve(hits: list[Hit], keeps: list[KeepSpan], text: str) -> tuple[list[Res
         cands.append(Resolved(h, conflict))
     cands.sort(key=lambda r: (-r.hit.confidence, -(r.hit.end - r.hit.start), r.hit.start, r.hit.entity.value))
     accepted: list[Resolved] = []
+    a_starts: list[int] = []
+    a_ends: list[int] = []
     for c in cands:
-        if not any(_overlaps(c.hit.start, c.hit.end, a.hit.start, a.hit.end) for a in accepted):
-            accepted.append(c)
+        i = bisect_left(a_starts, c.hit.end)  # accepted spans starting before c ends
+        if i and a_ends[i - 1] > c.hit.start:
+            continue  # the closest one overlaps (accepted spans are disjoint, so ends ascend too)
+        a_starts.insert(i, c.hit.start)
+        a_ends.insert(i, c.hit.end)
+        accepted.insert(i, c)
     accepted.sort(key=lambda r: r.hit.start)
     merged: list[Resolved] = []
     for r in accepted:

@@ -4,6 +4,19 @@ Measured 2026-11-26 on branch `phase-2-detection`, macOS (Darwin 27), Python 3.1
 `6c0a85a`. **No official score was computed.** The official evaluator is sealed. `check_dev.py` and our
 `dev_eval.py` are development guides, and both are reported below.
 
+> **Phase 2.1 update.** An independent audit of this phase was remediated on branch
+> `phase-2.1-remediation`. Every finding, its reproduction, fix and measured result is in
+> [PHASE2_REMEDIATION.md](PHASE2_REMEDIATION.md). In short:
+> - non-Patient FHIR text is detected;
+> - preserved fields are *guarded* rather than skipped;
+> - label classification uses a purity rule with restricted fuzzy matching;
+> - encoded values (XHTML, HTML entities, %-escapes, URL-safe/short base64, all Indic digit scripts) are
+>   decoded for detection;
+> - FHIR ids are rewritten consistently, binary attachments are withheld, and report counts are honest.
+>
+> The protection count in §8 has been corrected (55, not 96). Sections below describe Phase 2 and
+> note Phase 2.1 changes inline.
+
 ## 1. Architecture
 
 ```
@@ -40,8 +53,10 @@ VALIDATED_PATTERN evidence ≥ 0.88 only). **Pass 2** analyses, renames, sanitis
 | `detection/text.py` | tokens with original offsets, per-token normalisation (NFKC, zero-width, Devanagari digits, nukta, casefold), script and language cues |
 | `detection/translit.py` | Devanagari→Latin romanisation; phonetic name keys unifying Mohammad/Mohd/Md/मोहम्मद, Seeta/Sita/सीता, Tripathi/Tripathy/त्रिपाठी |
 | `detection/lexicon.py` | self-authored vocabularies (provenance below) |
-| `detection/semantics.py` | label/path classifier: 31 semantic types, fuzzy (Damerau ≤ 1/2), Devanagari label map, acronyms (`D.O.B.`), camelCase |
-| `detection/identifiers.py` | phones (all Indian formats, Devanagari digits), Aadhaar + Verhoeff, masked Aadhaar, ABHA number/address, PAN (holder-type letter), e-mail, insurance, labelled MRN/UHID/IPD |
+| `detection/semantics.py` | label/path classifier: 31 semantic types, Devanagari label map, acronyms (`D.O.B.`), camelCase. Phase 2.1: purity rule (all tokens must belong to one PII class plus neutral modifiers); fuzzy matching only for 6+ letter words towards distinctive PII words |
+| `detection/views.py` | (2.1) decoded views of XHTML / HTML-entity / %-encoded values with an exact offset map back |
+| `detection/caches.py` | (2.1) registry of memo caches, cleared after every run |
+| `detection/identifiers.py` | phones (all Indian formats, digits of every script), STD landlines (2.1), Aadhaar + Verhoeff (unlabelled checksum-invalid runs ignored since 2.1), masked Aadhaar, ABHA number (labelled contiguous form, 2.1) / address, PAN (holder-type letter), e-mail, insurance, labelled MRN/UHID/IPD |
 | `detection/names.py` | contextual patient/relative name detection (Latin, Devanagari, Hinglish) |
 | `detection/addresses.py` | house / ward / mohalla / landmark / village / PIN; tehsil and district preserved |
 | `detection/clinical.py` | clinical and doctor keep spans |
@@ -136,9 +151,10 @@ gazetteer token 0.60, never redacted); unlabelled ID shapes 0.60 (reported only)
 Detection summary (`logs/detection_summary.json`, counts only): 3,350 findings, all applied. By evidence:
 field semantics 2,041, address structure 332, validated pattern 318, label 278, propagation 259, context
 122. By channel: content 3,205, filename 48, metadata 48, base64 29, key 12, header 8. By language of the
-span: Latin 2,500, Devanagari 173, Hinglish 151, none (numeric-only spans) 526. 96 candidates were
-discarded by clinical/doctor protection, and 1 clinical conflict was overridden by strong evidence. 39 files
-were renamed.
+span: Latin 2,500, Devanagari 173, Hinglish 151, none (numeric-only spans) 526. 55 candidates were
+discarded by clinical/doctor protection (this document originally said 96. Re-running the committed Phase 2
+code gives 55, and Phase 2.1 gives the same), and 1 clinical conflict was overridden by strong evidence.
+39 files were renamed.
 
 ### Ablation: without cross-file propagation
 
@@ -188,11 +204,14 @@ Linear time, flat memory (two passes re-read files rather than holding documents
 - **ID formats** without a label, a known shape (UHID/IPD/ADM/IP), a field, a loose channel or prior
   confirmation stay below threshold (bill and visit numbers are intentionally kept).
 - **Addresses**: an unlabelled segment inside an address becomes VILLAGE/LOCALITY, so an unknown district
-  written without `Distt.` would be redacted (over-redaction, not a leak). Only UP districts are known.
+  written without `Distt.` would be redacted (over-redaction, not a leak). UP districts (Latin and, since
+  2.1, Devanagari) plus states and major cities are known.
 - **DOB** is replaced by `[DOB]` (FHIR `birthDate` keeps only the year so it stays a valid FHIR date). This
   is an interim treatment; Phase 4 replaces it with per-patient shifted dates.
-- **XML / PDF / images** are still quarantined, not parsed.
-- **Nested base64** (base64 inside a decoded payload) is not scanned.
+- **XML / PDF / images** are still quarantined, not parsed. Since 2.1 a binary *attachment* inside JSON/FHIR
+  is withheld (its `data` removed) instead of quarantining the whole file.
+- **Nested base64** (base64 inside a decoded payload) is not scanned. Hex inside plain text is
+  not decoded (2.1 decodes XHTML, HTML entities, %-escapes and URL-safe/short base64).
 
 ## 11. Deferred work
 

@@ -160,10 +160,13 @@ def test_official_validator(release):
 def test_dev_eval_script_runs(release):
     toolkit, _, out, _, _ = release
     script = Path(__file__).resolve().parents[2] / "scripts" / "dev_eval.py"
-    res = subprocess.run(
+    proc = subprocess.run(
         [sys.executable, str(script), "--output", str(out), "--truth", str(toolkit / "dev/truth/truth.json")],
         capture_output=True,
         text=True,
-        check=True,
-    ).stdout
-    assert "OFFICIAL-STYLE LEAK" in res and "PRESERVE PROBES" in res
+        check=False,
+    )
+    assert proc.returncode == 0, (
+        f"dev_eval.py failed (exit {proc.returncode})\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+    assert "OFFICIAL-STYLE LEAK" in proc.stdout and "PRESERVE PROBES" in proc.stdout

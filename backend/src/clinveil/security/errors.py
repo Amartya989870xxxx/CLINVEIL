@@ -14,6 +14,7 @@ REASON_CODES = frozenset(
     {
         # filesystem guards
         "symlink_outside_input",
+        "broken_symlink",
         "not_a_regular_file",
         "file_too_large",
         # content detection

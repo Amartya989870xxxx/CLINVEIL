@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from clinveil.config.policy import Policy
+from clinveil.detection import caches
 from clinveil.detection.engine import DetectionEngine, DetectionStats
 from clinveil.detection.value_index import SensitiveValueIndex
 from clinveil.export.release import (
@@ -41,10 +42,10 @@ from clinveil.export.release import (
     write_sanitized,
 )
 from clinveil.ingestion.detect import detect
-from clinveil.ingestion.discovery import discover, sha256_file
+from clinveil.ingestion.discovery import discover, read_input, sha256_input, unread_id
 from clinveil.ingestion.limits import IngestLimits
 from clinveil.models.records import RecordRef
-from clinveil.parsing.builder import build_document
+from clinveil.parsing.builder import build_document, build_placeholder
 from clinveil.privacy.pseudonym import Pseudonymizer
 from clinveil.sanitization.processors import RunStats, Sanitizer, sanitized_relpath
 from clinveil.security.errors import QuarantineError, safe_reason
@@ -67,6 +68,13 @@ class RunSummary:
 
 
 def run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Policy) -> RunSummary:
+    try:
+        return _run(input_dir, output_dir, secret, policy)
+    finally:
+        caches.clear_all()  # memo caches hold input fragments: they never outlive the run
+
+
+def _run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Policy) -> RunSummary:
     t0 = time.monotonic()
     sanitized_root = output_dir / "sanitized"
     sanitized_root.mkdir(parents=True, exist_ok=True)
@@ -88,13 +96,31 @@ def run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Policy
     for f in discovered:
         entry = FileEntry(input_sha256="")
         try:
+            if f.broken:
+                entry.input_sha256 = unread_id(f)  # nothing exists to read
+                raise QuarantineError("broken_symlink")
+            if f.special:
+                entry.input_sha256 = unread_id(f)  # a FIFO/socket/device is never opened
+                raise QuarantineError("not_a_regular_file")
             if f.escapes_root:
-                entry.input_sha256 = sha256_file(f.path)  # hashed for the report, never parsed
-                raise QuarantineError("symlink_outside_input")
+                # The target is NEVER opened (not even to hash it). The release keeps the path covered
+                # with an empty, content-free placeholder (filename PII still renamed), declared as
+                # "suppressed" under a non-identifying id: see PHASE2_REMEDIATION.md, S1.
+                entry.input_sha256 = unread_id(f)
+                doc = build_placeholder(f.rel, entry.input_sha256, f.path.suffix.lower())
+                analysis = engine.analyze(doc)
+                out_rel = sanitized_relpath(doc, analysis, reserved, taken)
+                renamed += out_rel != f.rel
+                result, _ = sanitizer.sanitize(doc, out_rel, analysis)
+                write_sanitized(sanitized_root, out_rel, result)
+                entry.output, entry.status, entry.reason = f"sanitized/{out_rel}", "suppressed", "symlink_outside_input"
+                files.append(entry)
+                input_shas.append(entry.input_sha256)
+                continue
             if f.size > policy.max_file_bytes:
-                entry.input_sha256 = sha256_file(f.path)
+                entry.input_sha256 = sha256_input(f.path, input_dir)
                 raise QuarantineError("file_too_large")
-            raw = f.path.read_bytes()
+            raw = read_input(f.path, input_dir, policy.max_file_bytes)
             entry.input_sha256 = hashlib.sha256(raw).hexdigest()
             detection = detect(raw, f.path.suffix.lower(), limits)  # raises QuarantineError for anything unsafe
             doc = build_document(f.rel, entry.input_sha256, len(raw), f.path.suffix.lower(), detection, limits)
@@ -107,6 +133,10 @@ def run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Policy
             records.extend(refs)
         except Exception as exc:  # noqa: BLE001 - fail safe: quarantine, never copy, never echo content
             entry.output, entry.status, entry.reason = None, "quarantined", safe_reason(exc)
+            if not entry.input_sha256:
+                # the read failed before any digest existed (vanished, changed, not a regular file):
+                # the report still needs an identifier, and it must not come from the path or a target
+                entry.input_sha256 = unread_id(f)
         files.append(entry)
         input_shas.append(entry.input_sha256)
     del index  # the run-local value index never outlives the run
@@ -128,7 +158,7 @@ def run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Policy
     return RunSummary(
         files_total=len(files),
         files_sanitized=n_san,
-        files_quarantined=len(files) - n_san,
+        files_quarantined=report["counts"]["files_quarantined"],
         records=len(records),
         problems=tuple(check_release(output_dir, input_shas)),
     )
@@ -139,10 +169,10 @@ def _seed_index(input_dir: Path, policy: Policy, limits: IngestLimits) -> Sensit
     index = SensitiveValueIndex()
     seeder = DetectionEngine(None)
     for f in discover(input_dir):
-        if f.escapes_root or f.size > policy.max_file_bytes:
+        if f.broken or f.special or f.escapes_root or f.size > policy.max_file_bytes:
             continue
         try:
-            raw = f.path.read_bytes()
+            raw = read_input(f.path, input_dir, policy.max_file_bytes)
             detection = detect(raw, f.path.suffix.lower(), limits)
             doc = build_document(
                 f.rel, hashlib.sha256(raw).hexdigest(), len(raw), f.path.suffix.lower(), detection, limits
@@ -162,6 +192,7 @@ def _write_detection_summary(output_dir: Path, det: DetectionStats, stats: RunSt
         "redactions_by_entity": dict(sorted(stats.entities.items())),
         "generalized": stats.generalized,
         "payloads_rewritten": stats.payloads_rewritten,
+        "attachments_withheld": stats.attachments_withheld,
         "files_renamed": renamed,
     }
     logs = output_dir / "logs"

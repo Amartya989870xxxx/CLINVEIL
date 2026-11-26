@@ -65,6 +65,25 @@ def build_document(rel: str, sha256: str, size: int, ext: str, det: Detection, l
     return doc
 
 
+def build_placeholder(rel: str, report_id: str, ext: str) -> Document:
+    """An empty stand-in for an input whose bytes are never read (a symlink escaping the input root).
+
+    It holds only the path's filename fields (so a name in the link's filename is still detected
+    and renamed) and no records. It renders as an empty file, or ``{}`` for ``.json`` so the
+    placeholder still parses in its declared format. Nothing in it comes from the link target.
+    """
+    is_json = ext == ".json"
+    source = SourceFile(
+        rel=rel,
+        sha256=report_id,
+        size=0,
+        ext=ext,
+        format=Format.JSON if is_json else Format.TEXT,
+        encoding="utf-8",
+    )
+    return Document(source=source, records=[], fields=_filename_fields(rel), native={} if is_json else "")
+
+
 # --------------------------------------------------------------------------- helpers
 def _with_payloads(f: Field, payloads: list[attachments.Payload]) -> list[Field]:
     """Attach decoded base64 payloads to ``f`` as segments + BASE64_TEXT child fields."""
@@ -73,7 +92,20 @@ def _with_payloads(f: Field, payloads: list[attachments.Payload]) -> list[Field]
     segs, children = [], []
     for n, p in enumerate(payloads):
         child_addr = f"{f.address}#b64/{n}"
-        segs.append(Base64Segment(p.start, p.end, child_addr, p.encoding, p.padded, p.declared_type))
+        segs.append(
+            Base64Segment(
+                p.start,
+                p.end,
+                child_addr,
+                p.encoding,
+                p.padded,
+                p.declared_type,
+                withheld=p.withheld,
+                urlsafe=p.urlsafe,
+            )
+        )
+        if p.withheld:
+            continue  # nothing to analyse: the payload is dropped from the release
         children.append(
             Field(
                 address=child_addr,
@@ -136,14 +168,17 @@ def _build_delimited(source: SourceFile, text: str, delimiter: str, limits: Inge
                     value=cell,
                     label=header[c] if c < len(header) else None,
                 )
-                fields.extend(_with_payloads(f, attachments.find_undeclared(cell, limits)))
+                fields.extend(_with_payloads(f, attachments.find_undeclared(cell, limits, withhold_binary=True)))
     return Document(source=source, records=records, fields=fields, native=rows)
 
 
 def _build_text(source: SourceFile, text: str, limits: IngestLimits) -> Document:
     f = Field(address="doc", path=(), record="doc", channel=Channel.CONTENT, kind=FieldKind.TEXT, value=text)
     return Document(
-        source=source, records=["doc"], fields=_with_payloads(f, attachments.find_undeclared(text, limits)), native=text
+        source=source,
+        records=["doc"],
+        fields=_with_payloads(f, attachments.find_undeclared(text, limits, withhold_binary=True)),
+        native=text,
     )
 
 
@@ -219,10 +254,12 @@ def _build_json(source: SourceFile, data: Any, limits: IngestLimits) -> Document
             if isinstance(node, str):
                 payloads: list[attachments.Payload] = []
                 if ctype is not None and label is not None and attachments.is_declared_data_key(label):
-                    declared = attachments.decode_declared(node, ctype, limits)
-                    payloads = [declared] if declared else attachments.find_undeclared(node, limits)
+                    declared = attachments.decode_declared(node, ctype, limits, withhold_binary=True)
+                    payloads = (
+                        [declared] if declared else attachments.find_undeclared(node, limits, withhold_binary=True)
+                    )
                 else:
-                    payloads = attachments.find_undeclared(node, limits)
+                    payloads = attachments.find_undeclared(node, limits, withhold_binary=True)
                 fields.extend(_with_payloads(f, payloads))
             else:
                 fields.append(f)

@@ -135,3 +135,50 @@ Format: decision, rationale, trade-off. **[NEEDS APPROVAL]** marks a choice a hu
 ## D22. Starter regex removed (Phase 2)
 - `detection/baseline_regex.py` (starter `PATTERNS`, verbatim) is deleted. `identifiers.py` rewrites the idea
   with validation and is recorded as "adapted" in `THIRD_PARTY_NOTICES.md` (conservative attribution).
+
+## D23. Preserved fields are guarded, never skipped (Phase 2.1)
+A semantic class such as *clinical*, *doctor*, *relation* or *date* used to switch detection off for the
+field. The audit showed PII inside such fields leaked (a mis-classified `Diet` column, non-Patient FHIR
+notes). Now no semantic disables detection. Preserved fields keep their value but still lose:
+- validated identifiers;
+- names behind explicit cues;
+- names next to phone numbers;
+- exact run-confirmed values.
+
+Doctor/staff/organisation fields never take name propagation, and short digit cores are not evidence
+inside an ID field. Cost: about +25% runtime on the practice set. The practice output is unchanged.
+
+## D24. Label classification by purity, with restricted fuzzy matching (Phase 2.1)
+A label gets a PII class only if all of its tokens belong to that class (plus neutral modifiers such as
+`Patient`, `No`, `Primary`, `by`). Fuzzy correction applies only to 6+ letter words at edit distance 1
+towards distinctive PII words; shorter words only get an adjacent-letter swap (`Nmae`). This trades a few
+exotic misspellings for never turning `urea`, `Diet`, `Mode`, `cell_count` or `birth_weight` into PII.
+
+## D25. Decoded views instead of pre-decoding the input (Phase 2.1)
+HTML entities, XHTML markup and %-escapes are decoded *per field for detection only*, with an exact
+character map back to the original. The output keeps its original encoding and markup; only the detected
+spans are replaced, split at tag boundaries. Pre-decoding the whole file would have changed bytes the
+scorer compares (schema, format validity) and broken XHTML.
+
+## D26. Binary attachments are withheld, not quarantined with their container (Phase 2.1)
+A scan or photo cannot be sanitised, but quarantining a whole FHIR Bundle for one attachment loses every
+other resource. The `data` member is removed (optional in R4), so the Bundle stays valid and is
+exported. Inside text, the payload becomes `[ATTACHMENT-WITHHELD]`. Invalid declared payloads still
+quarantine the file.
+
+## D27. Coarse key for redaction, strict key for linking (Phase 2.1)
+`translit.name_key` is recall-oriented: a collision such as `Kiran`/`Karan` costs at most an
+over-redaction. `translit.name_key_strict` keeps vowel qualities and is the key Phase 3 must use, together
+with corroborating identifiers (D7), because a false merge corrupts two patients' records.
+
+## D28. Escaping symlinks are never opened; their path gets a declared placeholder (Phase 2.1)
+Reading a target outside the input root, even only to hash it and even under a size cap, lets an input
+tree make the process read arbitrary files (secrets, FIFOs, devices). The official contract, however,
+identifies inputs by the SHA-256 of the bytes behind the path, and `validate_output.py` fails a run in
+which an input path is neither exported nor declared. We therefore export an empty, content-free
+placeholder at the (filename-sanitised) path, declared `suppressed` with reason
+`symlink_outside_input` under a non-identifying synthetic id. The validator accepts this with one WARN.
+The one residual conflict is a link whose own filename holds PII: the placeholder is renamed and cannot be
+declared without the target's hash, so the validator reports one undeclared input. Privacy and no-read
+win over that error. All other reads open the verified real path with `O_NOFOLLOW | O_NONBLOCK` and require
+a regular file.
