@@ -12,12 +12,30 @@ from __future__ import annotations
 
 REASON_CODES = frozenset(
     {
-        "unsupported_format",
-        "empty_file",
-        "undecodable_text",
-        "file_too_large",
+        # filesystem guards
         "symlink_outside_input",
         "not_a_regular_file",
+        "file_too_large",
+        # content detection
+        "empty_file",
+        "unsupported_pdf",
+        "unsupported_image",
+        "unsupported_archive",
+        "unsupported_binary",
+        "unsupported_xml",
+        # text decoding
+        "undecodable_text",
+        "implausible_text",
+        # JSON safety
+        "invalid_json",
+        "json_too_deep",
+        "json_too_large",
+        # base64 attachments
+        "invalid_attachment",
+        "unsupported_attachment",
+        "attachment_too_large",
+        # legacy generic code (kept so older reports stay valid; no longer emitted)
+        "unsupported_format",
     }
 )
 

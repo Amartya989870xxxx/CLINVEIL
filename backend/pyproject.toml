@@ -33,7 +33,6 @@ pythonpath = ["src"]
 addopts = "-ra --strict-markers"
 markers = [
   "toolkit: needs the organiser toolkit checked out at ../organiser-toolkit (skipped otherwise)",
-  "starter_parity: pins Phase 0 byte-parity with the official starter; retire when Phase 1 changes output",
 ]
 
 [tool.ruff]

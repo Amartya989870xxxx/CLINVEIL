@@ -32,6 +32,12 @@ class Policy:
     # Files larger than this are quarantined unread (hash is streamed). 256 MiB keeps
     # one in-memory copy well inside the 4 GB process-tree budget.
     max_file_bytes: int = 256 * 1024 * 1024
+    # JSON safety limits: larger, deeper or bigger trees are quarantined with a reason code.
+    max_json_bytes: int = 64 * 1024 * 1024
+    max_json_depth: int = 64
+    max_json_nodes: int = 2_000_000
+    # Decoded size cap for one base64 attachment.
+    max_attachment_bytes: int = 16 * 1024 * 1024
     extra: dict[str, int | str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -39,11 +45,21 @@ class Policy:
             raise ValueError("policy.age_band_years must be >= 1")
         if self.date_shift_max_days < 1:
             raise ValueError("policy.date_shift_max_days must be >= 1")
-        if self.max_file_bytes < 1:
-            raise ValueError("policy.max_file_bytes must be >= 1")
+        for name in ("max_file_bytes", "max_json_bytes", "max_json_depth", "max_json_nodes", "max_attachment_bytes"):
+            if getattr(self, name) < 1:
+                raise ValueError(f"policy.{name} must be >= 1")
 
 
-_KNOWN = ("age_band_years", "date_shift_max_days", "min_group_size", "max_file_bytes")
+_KNOWN = (
+    "age_band_years",
+    "date_shift_max_days",
+    "min_group_size",
+    "max_file_bytes",
+    "max_json_bytes",
+    "max_json_depth",
+    "max_json_nodes",
+    "max_attachment_bytes",
+)
 
 
 def load_policy(path: Path | None) -> Policy:

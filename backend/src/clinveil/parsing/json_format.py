@@ -2,9 +2,10 @@
 # MIT licence; see THIRD_PARTY_NOTICES.md. The MIT licence covers only those portions.
 """JSON record enumeration and RFC 6901 pointers (starter-equivalent).
 
-A document is treated as one record (``doc``) when it is a FHIR Bundle, not an
-object, or has no top-level list of objects. Otherwise each element of each
-top-level list-of-objects is a record ``/<key>/<i>``.
+A document is treated as one record (``doc``) when it is a FHIR resource (a
+Bundle or any object with a string ``resourceType``), not an object, or has no
+top-level list of objects. Otherwise each element of each top-level
+list-of-objects is a record ``/<key>/<i>``.
 """
 
 from __future__ import annotations
@@ -17,16 +18,21 @@ def pointer_escape(token: str) -> str:
     return token.replace("~", "~0").replace("/", "~1")
 
 
+def pointer(path: tuple[Any, ...] | list[Any]) -> str:
+    """RFC 6901 pointer for a structural path of keys and indices (``()`` -> ``""``)."""
+    return "".join("/" + (pointer_escape(p) if isinstance(p, str) else str(p)) for p in path)
+
+
+def is_fhir(data: Any) -> bool:
+    return isinstance(data, dict) and isinstance(data.get("resourceType"), str)
+
+
 def _is_record_list(v: Any) -> bool:
     return isinstance(v, list) and bool(v) and all(isinstance(x, dict) for x in v)
 
 
 def is_single_document(data: Any) -> bool:
-    return (
-        not isinstance(data, dict)
-        or data.get("resourceType") == "Bundle"
-        or not any(_is_record_list(v) for v in data.values())
-    )
+    return not isinstance(data, dict) or is_fhir(data) or not any(_is_record_list(v) for v in data.values())
 
 
 def record_locators(data: Any) -> list[str]:

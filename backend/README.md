@@ -15,18 +15,18 @@ byte-deterministic. Fully offline, standard library only.
 | Package | Responsibility | Key files |
 |---|---|---|
 | `cli.py` | argument contract, secret and policy loading, exit codes, PII-free fatal errors | |
-| `pipeline.py` | orchestration: discover, guard, decode, sanitise, export, self-check | |
+| `pipeline.py` | orchestration: discover, guard, detect, build IR, sanitise, render, export, self-check | |
 | `config/` | `Policy` from `config/policy.yaml` (flat `key: value`) | `policy.py` |
-| `ingestion/` | sorted discovery, symlink and size flags, streamed hashing, decoding | `discovery.py`, `decoding.py` |
-| `parsing/` | CSV/TSV and JSON structure, record locators | `csv_format.py`, `json_format.py` |
+| `ingestion/` | sorted discovery, symlink and size flags, streamed hashing; content-based detection; validated decoding; limits | `discovery.py`, `detect.py`, `signatures.py`, `decoding.py`, `plausibility.py`, `limits.py` |
+| `parsing/` | the common IR builder; CSV/TSV, bounded JSON, FHIR enumeration, base64 payloads | `builder.py`, `csv_format.py`, `json_format.py`, `json_safety.py`, `fhir.py`, `attachments.py` |
 | `detection/` | detectors emit typed `Finding`s (Phase 2); starter regex today | `baseline_regex.py` |
 | `linking/` | cross-document identity resolution (Phase 3) | `linker.py` |
 | `privacy/` | HMAC pseudonyms, per-patient date shifts, generalisation | `pseudonym.py`, `generalize.py` |
-| `sanitization/` | per-format processors that apply decisions while preserving structure | `processors.py` |
+| `sanitization/` | IR field transformer and per-format renderers that preserve structure | `processors.py`, `render.py` |
 | `export/` | release writers (byte formatting matches the starter) | `release.py` |
 | `security/` | `ReleaseSecret`, reason codes, path containment | `secrets.py`, `errors.py`, `paths.py` |
 | `validation/` | pre-exit release check (false-success guard) | `contract.py` |
-| `models/` | `Finding`, `RecordRef` | `findings.py`, `records.py` |
+| `models/` | the IR (`Document`, `Field`, `SourceFile`, FHIR index), `Channel`, `Finding`, `RecordRef` | `document.py`, `channels.py`, `findings.py`, `records.py` |
 | `metrics/` | development metrics (Phase 6) | |
 | `utils/` | peak RSS | `resources.py` |
 
@@ -47,14 +47,15 @@ cd backend
 
 | Suite | Covers |
 |---|---|
-| `unit/` | pseudonyms (A6 and A7 properties), date shifts, age bands, decoding, parsing, policy, security primitives |
-| `integration/` | full CLI on a synthetic tree: statuses, reasons, locators, UTF-8, official validator |
-| `regression/` | **byte parity with the official starter**, determinism, meaning and language trap spec |
+| `unit/` | pseudonyms (A6 and A7 properties), date shifts, age bands, encodings and plausibility, content detection, JSON safety, base64 payloads, FHIR enumeration, IR and rendering, policy, security primitives |
+| `integration/` | full CLI on a synthetic tree: statuses, reason codes, locators, UTF-8, mislabeled JSON, attachment re-encoding, base64-aware leak scan, official validator |
+| `regression/` | **Phase 1 delta vs the official starter** (only intended changes, each exactly as expected), determinism, meaning and language trap spec |
 | `security/` | secret never written, PII-free channels, input untouched, symlinks, size cap, fail-closed |
 
 `xfail(strict=True)` marks a *known* gap. When a phase fixes it, the test XPASSes, the suite fails,
 and the marker must be removed, so the suite always states exactly what the engine can do.
-`test_starter_parity.py` is deleted deliberately at the first change meant to alter output.
+`test_phase1_delta.py` replaced the Phase 0 byte-parity test: every output differs from the starter's
+only where an ingestion change requires it. Update its expectations deliberately when Phase 2 changes output.
 
 All fixtures are synthetic and written for the tests. Practice data is read from
 `../organiser-toolkit` (or `CLINVEIL_TOOLKIT`) and never copied into this repository.

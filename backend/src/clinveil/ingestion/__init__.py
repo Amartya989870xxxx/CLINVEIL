@@ -1,7 +1,12 @@
-"""Ingestion: safe, deterministic discovery of input files and byte-level decoding.
+"""Ingestion: safe discovery, content-based format detection, decoding and limits.
 
-Every input file is untrusted. Discovery never follows a symlink out of the input
-root, never reads a file above the size cap, and yields files in a fixed order.
-Phase 1 adds content sniffing (do not trust extensions: JSON behind ``.csv``) and
-base64 attachment extraction.
+* ``discovery``    sorted, containment-checked file walk; streamed hashing
+* ``signatures``   magic-byte detection of formats we never parse (PDF, images, archives, executables)
+* ``decoding``     UTF-8 / UTF-8-BOM / UTF-16 (with or without BOM) / cp1252, with plausibility validation
+* ``plausibility`` mojibake / corruption / binary-control heuristics
+* ``detect``       the decision procedure: bytes + extension -> :class:`Detection` or a quarantine reason
+* ``limits``       explicit resource limits derived from the policy
+
+Every input is untrusted: nothing here follows symlinks out of the input root,
+reads above the size cap, recurses without a bound, or trusts the extension.
 """

@@ -24,7 +24,7 @@ evidence. P4 needs P3's clusters, because date shifts and pseudonyms are per pat
 
 **Accepted when:** CONTRACT OK, parity test green, no secrets or answer keys in git. ✅
 
-## Phase 1: reliable ingestion (priority: high, about 0.5 day)
+## Phase 1: reliable ingestion ✅ (branch `phase-1-ingestion`; evidence: [PHASE1_INGESTION.md](../evaluation/PHASE1_INGESTION.md))
 - Content sniffing: JSON behind `.csv` (`misc/mislabeled_export.csv`), XML, PDF and JPEG magic bytes
 - Decode plausibility: quarantine invalid-UTF-8 files that cp1252 "decodes" into mojibake (`corrupt_bytes_note.txt`)
 - Common IR with field paths, kinds and channel tags (`content`/`header`/`key`/`metadata`/`base64`/`filename`)
@@ -32,7 +32,8 @@ evidence. P4 needs P3's clusters, because date shifts and pseudonyms are per pat
 - Base64 attachment extraction (decode, then sanitise as text, re-encode)
 
 **Accepted when:** every practice `misc/` file is either correctly parsed or quarantined with a reason code;
-no file in `sanitized/` is byte-identical to a broken input; parity test retired.
+no file in `sanitized/` is byte-identical to a broken input; parity test retired. ✅ All verified:
+`test_phase1_delta.py` pins every output difference against the starter, and the Phase 0 parity test is removed.
 
 ## Phase 2: detection (priority: highest, 20 pts plus a share of privacy, about 2 days)
 1. **Column and key semantics:** classify headers and keys by token features (`naam`, `name`,
@@ -94,8 +95,8 @@ utility ≥ 0.40 coupling threshold with margin; age bands always contain the tr
 - Frontend integration; judge-facing walkthrough on synthetic data only
 
 ## Next five tasks (in order)
-1. **P1: content sniffing and decode plausibility** (removes the raw-copy and false-sanitise risk on `misc/`)
-2. **P2: column and key semantic classifier plus structured-value PII set** (largest single recall gain: names, MRNs, addresses in registration data)
-3. **P2: propagation of known PII values into notes, filenames, keys and base64** (canaries, hidden channels)
-4. **P3: strong-key linking with pseudonym written inside records** (unlocks 15 pts, A6 and A7, and the secret-dependence check)
-5. **P4: per-patient date shift and age bands applied across all formats** (privacy arena A2–A5)
+1. **P2: detector framework on the IR**: `Finding`s per field address, overlap resolution, typed placeholders, and the Phase 1 baseline coverage reproduced as the first detector (so the delta test keeps working)
+2. **P2: column and key semantic classifier plus structured-value PII set** (largest single recall gain: names, MRNs, addresses in registration data; includes header, key and FHIR-role cues)
+3. **P2: propagation of known PII values into notes, filenames, keys, metadata and base64 payloads** (canaries, hidden channels), plus filename renaming with the report mapping
+4. **P2: Indian ID/phone patterns with dose guards plus Latin/Devanagari label and relative rules** (turn the strict xfails into passes)
+5. **P3: strong-key linking with the pseudonym written inside records** (unlocks 15 pts, A6 and A7, and the secret-dependence check)

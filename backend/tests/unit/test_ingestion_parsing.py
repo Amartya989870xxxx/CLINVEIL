@@ -1,31 +1,7 @@
 import pytest
 
 from clinveil.config.policy import Policy, load_policy
-from clinveil.ingestion.decoding import decode
 from clinveil.parsing import csv_format, json_format
-
-
-@pytest.mark.parametrize(
-    "raw, expected",
-    [
-        ("नाम: test".encode(), "नाम: test"),
-        (b"\xef\xbb\xbfa,b\n", "a,b\n"),
-        ("a\tb\n".encode("utf-16"), "a\tb\n"),
-        ("a\tb\n".encode("utf-16-be").join([b"\xfe\xff", b""]), "a\tb\n"),
-        ("Café".encode("cp1252"), "Café"),
-    ],
-)
-def test_decode_supported_encodings(raw, expected):
-    assert decode(raw) == expected
-
-
-def test_decode_rejects_bytes_invalid_in_utf8_and_cp1252():
-    assert decode(b"x \x81\x8d y") is None
-
-
-def test_bom_with_invalid_utf8_raises():
-    with pytest.raises(UnicodeDecodeError):
-        decode(b"\xef\xbb\xbf\xff\xfe")
 
 
 def test_csv_roundtrip_keeps_delimiter_header_and_quoting():

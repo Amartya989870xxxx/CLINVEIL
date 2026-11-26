@@ -12,6 +12,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from clinveil.models.channels import Channel
+
+__all__ = ["Action", "Channel", "EntityType", "Finding", "Method", "Span"]
+
 
 class EntityType(str, Enum):
     PATIENT_NAME = "PATIENT_NAME"
@@ -33,17 +37,6 @@ class EntityType(str, Enum):
     PIN = "PIN"
     AGE = "AGE"  # quasi-identifier: generalised, not removed
     DATE = "DATE"  # clinical date: shifted, not removed
-
-
-class Channel(str, Enum):
-    """Where the PII hides (mirrors the truth file's ``channel``)."""
-
-    CONTENT = "content"
-    FILENAME = "filename"
-    HEADER = "header"
-    KEY = "key"
-    METADATA = "metadata"
-    BASE64 = "base64"
 
 
 class Action(str, Enum):

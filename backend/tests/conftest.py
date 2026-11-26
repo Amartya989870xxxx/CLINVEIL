@@ -8,6 +8,7 @@ when it is absent.
 
 from __future__ import annotations
 
+import base64
 import os
 import subprocess
 import sys
@@ -122,6 +123,25 @@ def build_synthetic_input(root: Path) -> dict[str, str]:
     expected["misc/truncated.json"] = "quarantined"
     _w(root, "misc/bad_bytes.txt", b"note \x81\x8d\x8f\x90\x9d end")  # invalid UTF-8 and undefined in cp1252
     expected["misc/bad_bytes.txt"] = "quarantined"
+
+    # ---- Phase 1 ingestion traps
+    _w(root, "misc/mislabeled.csv", f'{{"patient": "{SYNTH_NAME}", "aadhaar": "{SYNTH_AADHAAR}"}}'.encode())
+    expected["misc/mislabeled.csv"] = "sanitized"  # JSON content, parsed as JSON
+    _w(root, "misc/corrupt_note.txt", b"OPD note. \xff\xfe\xc3( Mobile pending. C/O cough.\n")
+    expected["misc/corrupt_note.txt"] = "quarantined"  # implausible_text
+    _w(root, "misc/deep.json", b'{"l":' * 100 + b'"x"' + b"}" * 100)
+    expected["misc/deep.json"] = "quarantined"  # json_too_deep
+    _w(root, "misc/cda.xml", b'<?xml version="1.0"?><ClinicalDocument><name>x</name></ClinicalDocument>')
+    expected["misc/cda.xml"] = "quarantined"  # unsupported_xml
+    payload = base64.b64encode(f"Consent witnessed, phone {SYNTH_PHONE}.".encode()).decode()
+    _w(
+        root,
+        "forms/consent.json",
+        f'{{"form": "consent", "attachment": {{"contentType": "text/plain", "data": "{payload}"}}}}'.encode(),
+    )
+    expected["forms/consent.json"] = "sanitized"  # payload decoded, cleaned, re-encoded
+    _w(root, "notes/handover.log", f"Handover: callback {SYNTH_PHONE}\n".encode())
+    expected["notes/handover.log"] = "sanitized"  # unknown extension, plain text content
     return expected
 
 
