@@ -7,3 +7,7 @@ age_band_years: 5          # ages become bands like 45-49 (the band must CONTAIN
 date_shift_max_days: 180   # every date of one patient moves by the same secret offset, never 0
 min_group_size: 5          # Phase 4: widen/suppress quasi-identifier combos rarer than this (k-anonymity)
 max_file_bytes: 268435456  # 256 MiB: larger inputs are quarantined unread (streamed hash only)
+max_json_bytes: 67108864   # 64 MiB: larger JSON inputs are quarantined (json_too_large)
+max_json_depth: 64         # deeper nesting is quarantined (json_too_deep); practice FHIR peaks at 11
+max_json_nodes: 2000000    # more values/containers than this are quarantined (json_too_large)
+max_attachment_bytes: 16777216  # 16 MiB decoded per base64 attachment (attachment_too_large)

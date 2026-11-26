@@ -28,9 +28,9 @@ Assumption from the problem statement: *"Assume your server will be breached one
 |---|---|---|---|
 | Input traversal | symlink to `/etc` or `~/.ssh` exported as a "sanitised" file | escaping symlinks quarantined, never parsed; symlinked dirs not traversed | ✅ P0 |
 | Input size | memory exhaustion | `max_file_bytes` cap, streamed hashing | ✅ P0 |
-| Deep JSON | `RecursionError`/crash | recursion limit 5000 plus per-file quarantine on any exception | ✅ P0 |
-| Extension spoofing | JSON behind `.csv` mangled as CSV | content sniffing | ⏳ P1 |
-| Wrong decoding | invalid UTF-8 decoded as cp1252 mojibake and exported | decode plausibility check | ⏳ P1 |
+| Deep / huge JSON | `RecursionError`, memory blow-up | linear pre-parse depth scan (limit 64), size (64 MiB) and node (2M) limits, no raised recursion limit; quarantine with stable codes | ✅ P1 |
+| Extension spoofing | JSON behind `.csv` mangled as CSV | content-based detection: signatures, JSON-first, markup, delimiter sniffing | ✅ P1 |
+| Wrong decoding | invalid UTF-8 decoded as cp1252 mojibake and exported | plausibility: UTF-8 fragments, mid-file BOMs, non-ASCII ratio; binary control chars | ✅ P1 |
 | Output paths | write outside `sanitized/` | `safe_join` (no absolute paths, no `..`, symlinked-dir check); input/output overlap refused | ✅ P0 |
 | Input mutation | penalised (−5) and destructive | read-only access pattern; overlap guard; test hashes the input before and after | ✅ P0 |
 | Error messages | exception text echoes values | reasons are allowlisted codes or type names; CLI prints only the type name, never a traceback | ✅ P0 |
@@ -38,7 +38,8 @@ Assumption from the problem statement: *"Assume your server will be breached one
 | Secret | written or logged; weak or missing key | env-only, unprintable, unpicklable; fail closed when missing; test scans every output byte for it | ✅ P0 |
 | Temp files | PII left in `TMPDIR` | none written; if ever needed, AES-GCM with an ephemeral key, deleted in `finally` | ✅ P0 (by absence) |
 | Filenames | `Discharge_Summary_<Name>_<UHID>.txt` | rename and record the mapping by hash | ⏳ P2 |
-| Hidden channels | keys, headers, metadata, base64, FHIR narrative | channel-aware detection and propagation | ⏳ P1–P2 |
+| Base64 payloads | PII exported inside raw attachments | declared and embedded payloads decoded, cleaned, re-encoded; binary or invalid payloads quarantine the file; 16 MiB decoded cap | ✅ P1 (baseline rules) |
+| Hidden channels | keys, headers, metadata, FHIR narrative | channel-tagged IR (P1) plus channel-aware detection and propagation | ⏳ P2 |
 | Pseudonym inversion (A6) | unkeyed hash of the UHID | HMAC-SHA256 keyed with the release secret; no identifier material in the code | ✅ helper; ⏳ applied P3 |
 | Cross-release (A7) | stable pseudonyms or shifts across releases | every derivation keyed by the secret | ⏳ applied P3/P4 |
 | Global shift recovery (A5) | one shift for everyone | per-patient keyed shift | ⏳ applied P4 |

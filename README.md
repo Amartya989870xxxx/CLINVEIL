@@ -10,10 +10,11 @@ re-identification by an attacker holding a voter-roll-style register.
 Built by team **APEX** for **Yugaantar DevForge · Track 3 · Secret Wards**. All data handled in development and
 demonstration is **synthetic**. No real patient data is used or permitted anywhere in this project.
 
-> **Status: Phase 0 (foundation).** The pipeline is currently a modular, hardened refactor of the
-> official starter. It is byte-identical to the starter on the practice data and passes
-> `CONTRACT OK`, but it does **not** yet do real detection, linking or quasi-identifier handling.
-> Measured baseline: [docs/evaluation/BASELINE.md](docs/evaluation/BASELINE.md).
+> **Status: Phase 1 (reliable ingestion).** Content-based format detection, validated decoding,
+> bounded JSON, FHIR enumeration and a sanitisation-aware base64 pipeline feed a common internal
+> representation. Detection is still the starter's regex baseline: the engine does **not** yet do
+> real PII detection, linking or quasi-identifier handling.
+> Measured: [Phase 0 baseline](docs/evaluation/BASELINE.md) · [Phase 1 ingestion](docs/evaluation/PHASE1_INGESTION.md).
 > Roadmap: [docs/architecture/IMPLEMENTATION_PLAN.md](docs/architecture/IMPLEMENTATION_PLAN.md).
 
 ## The challenge
@@ -41,14 +42,14 @@ coupling, so deleting everything scores only about 20/100.
 
 Full design: [docs/architecture/SYSTEM_ARCHITECTURE.md](docs/architecture/SYSTEM_ARCHITECTURE.md).
 
-| Stage | Module | Phase 0 state |
+| Stage | Module | Current state |
 |---|---|---|
-| Ingestion | `clinveil.ingestion` | deterministic discovery, symlink and size guards, UTF-8/BOM/UTF-16/cp1252 decoding |
-| Parsing | `clinveil.parsing` | CSV/TSV (delimiter and header kept), JSON record locators (RFC 6901) |
+| Ingestion | `clinveil.ingestion` | deterministic discovery, symlink and size guards; content-based detection (signatures, JSON-first, markup, delimiter sniffing); UTF-8/BOM/UTF-16 (incl. BOM-less)/cp1252 with mojibake and binary checks |
+| Parsing | `clinveil.parsing` | common IR (`Document`/`Field`: address, path, record, channel, kind, label); bounded JSON (depth 64, size, nodes); FHIR roles, entries and reference resolution; declared and embedded base64 payloads |
 | Detection | `clinveil.detection` | starter regex baseline only; typed `Finding` model defined |
 | Linking | `clinveil.linking` | interface only, links nothing (safe: a wrong link costs more than none) |
 | Privacy | `clinveil.privacy` | HMAC pseudonyms, per-patient date shift, age bands (helpers, not yet applied) |
-| Sanitisation | `clinveil.sanitization` | per-format processors |
+| Sanitisation | `clinveil.sanitization` | IR field transformer (baseline rules) + format renderers; payloads decoded, cleaned, re-encoded |
 | Export | `clinveil.export` | `report.json`, `records.jsonl`, contained writes |
 | Security | `clinveil.security` | unprintable secret, PII-free reason codes, path containment |
 | Validation | `clinveil.validation` | in-process release check before exit 0 |
@@ -115,14 +116,17 @@ that refuses to print or pickle. Findings and file handles hide their raw text f
 logged except counts. No intermediate files are written. The process refuses an output directory that
 overlaps its input. Full model: [docs/security/THREAT_MODEL.md](docs/security/THREAT_MODEL.md).
 
-## Known limitations (Phase 0)
+## Known limitations (Phase 1)
 
-- Leaks about 84% of practice PII (all Devanagari and Hinglish names, relatives, MRNs, addresses,
-  hidden channels) and all 4 practice canaries.
+- Detection is still the starter regex: about 84% of practice PII leaks (all Devanagari and Hinglish
+  names, relatives, MRNs, addresses) and all 4 practice canaries.
 - Links no records. Output therefore does not depend on the secret, and `check_submission.py` warns about this.
 - No date shifting, age banding, location generalisation or rare-value suppression is applied yet.
-- No filename, header, key, metadata or base64 sanitisation. File extensions are trusted.
-- FHIR validity is not actively maintained beyond preserving the JSON structure.
+- Headers, filenames and metadata are represented in the IR but not yet transformed. Base64 payloads are
+  processed with the baseline rules only.
+- A file with an unsupported (binary) attachment is quarantined whole rather than having just the payload withheld.
+- XML (incl. HL7 CDA), PDF and images are quarantined, not parsed.
+- FHIR is enumerated and its structure preserved; ids and references are not yet rewritten.
 
 ## Repository layout
 

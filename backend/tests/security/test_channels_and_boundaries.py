@@ -93,10 +93,10 @@ def test_unexpected_exception_reason_has_no_content(synthetic_input, tmp_path, m
     from clinveil.sanitization.processors import Sanitizer
     from clinveil.security.secrets import ReleaseSecret
 
-    def boom(self, text, out_rel):
+    def boom(self, doc, out_rel):
         raise ValueError(SYNTH_NAME)
 
-    monkeypatch.setattr(Sanitizer, "process_text", boom)
+    monkeypatch.setattr(Sanitizer, "sanitize", boom)
     inp, _ = synthetic_input
     out = tmp_path / "out"
     summary = pipeline.run(inp, out, ReleaseSecret(b"k"), Policy())
@@ -115,3 +115,4 @@ def test_pathologically_deep_json_does_not_crash(tmp_path, payload):
     assert r.code == 0, r.stderr
     rep = json.loads((r.out / "report.json").read_text(encoding="utf-8"))
     assert rep["counts"]["files_total"] == 1
+    assert rep["files"][0]["status"] == "quarantined" and rep["files"][0]["reason"] == "json_too_deep"

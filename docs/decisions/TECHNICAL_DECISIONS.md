@@ -76,3 +76,33 @@ Format: decision, rationale, trade-off. **[NEEDS APPROVAL]** marks a choice a hu
 
 ## D12. Team name in `raksha.toml` is "APEX" (decided 2026-11-26)
 - APEX is the registered team name. CLINVEIL remains the product name in code, docs and branding.
+
+## D13. Common IR: typed fields over the parsed structure (Phase 1)
+- **Decision:** every format parses into `Document{source, records, fields, native, fhir}`. A `Field` has
+  a unique address, structural path, owning record, channel, kind, label, FHIR context and base64
+  segments. Sanitisation maps `address → new value`, and a per-format renderer rebuilds the file from `native`.
+- **Why:** Phase 2 detectors work on one representation with channel and record context, and output keeps
+  its structure. Flattening to text would lose headers, keys, pointers and FHIR roles.
+- **Trade-off:** one Python object per value. Measured memory stays flat (each file's IR is freed after
+  rendering), but one very large CSV or JSON costs several times its size. JSON is capped at 64 MiB.
+
+## D14. Content beats extension; the extension is supporting evidence (Phase 1)
+- Order: signature → decode and plausibility → JSON-first for `{`/`[` → markup → `.csv`/`.tsv` delimiter
+  sniffing → text. A failed JSON parse degrades to text only for text-like or unknown extensions, and to
+  CSV only with real tabular evidence (≥ 2 columns, ≥ 2 rows, ≥ 80% consistent). Otherwise it is quarantined.
+- Unknown extensions with plausible text content are processed as text rather than quarantined, to keep
+  utility on unseen formats. The output stays text at the same path.
+
+## D15. Explicit, stable limits and reason codes (Phase 1)
+- JSON depth 64 (practice peak 11; trap 1,502), 64 MiB, 2M nodes; decoded attachment 16 MiB; file 256 MiB.
+  All are configurable in `config/policy.yaml`. The raised recursion limit was removed: depth is checked
+  linearly *before* `json.loads`.
+- Reason codes replace exception names for every expected failure (`invalid_json` instead of `JSONDecodeError`).
+
+## D16. Base64 payloads (Phase 1)
+- Declared payloads (data-like key + content-type sibling + base64 shape) must decode. Undeclared runs
+  (24+ chars) count only if they decode to clean, printable UTF-8 text, so URLs, hashes and tokens are ignored.
+- A payload is decoded, transformed and re-encoded (padding preserved). An unchanged payload keeps its
+  original bytes. Binary or invalid payloads **quarantine the whole file**. This is simpler and safe;
+  withholding only the payload (keeping FHIR valid) is a Phase 5 refinement.
+- One level only: base64 inside decoded base64 is not scanned.

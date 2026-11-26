@@ -36,18 +36,36 @@ it. Where it says "Phase N", the component is designed but not implemented yet.
 
 ## 2. Processing pipeline
 
-| # | Step | Today (Phase 0) | Target |
+| # | Step | Today (Phase 1) | Target |
 |---|---|---|---|
-| 1 | **Discover** | `sorted(rglob)`, symlink-escape flag, size | + content sniffing (JSON behind `.csv`), stable order independent of locale |
-| 2 | **Guard** | escaping symlink → quarantine; `> max_file_bytes` → quarantine (streamed hash) | + nesting-depth and record-count limits |
-| 3 | **Decode** | BOM-UTF-8 → UTF-16 BOM → UTF-8 → cp1252 | + plausibility check (cp1252 mojibake / binary → quarantine), BOM-less UTF-16 |
-| 4 | **Parse** | CSV/TSV rows; JSON tree and record locators; text as one doc | common IR: `Document{records[], fields[(path, value, kind)], channels}` incl. FHIR resources and references |
+| 1 | **Discover** | `sorted(rglob)`, symlink-escape flag, size | stable order independent of locale |
+| 2 | **Guard** | escaping symlink → quarantine; `> max_file_bytes` → quarantine (streamed hash); JSON size, depth (64) and node limits | record-count limits for huge CSVs |
+| 3 | **Detect + decode** | signatures (PDF/images/archives/executables) → decode (BOM-UTF-8, UTF-16 with or without BOM, UTF-8, cp1252 with mojibake/binary plausibility) → JSON-first if `{`/`[` → XML markup → delimiter sniffing for `.csv`/`.tsv` → text; extension is supporting evidence | XML/CDA parsing |
+| 4 | **Parse** | common IR `Document{source, records[], fields[], native, fhir}`; each `Field` has address, path, record, channel, kind, label, FHIR context, base64 segments | |
 | 5 | **Detect** | regex baseline, redacts in place | layered detectors emit `Finding`s: column semantics, patterns with dose guards, labels and context, gazetteers and transliteration, propagation of known PII values, preserve rules |
 | 6 | **Link** | none (`null`) | two-pass: evidence index over all records, strong-key edges, guarded weak edges, conservative clustering, `null` when ambiguous |
 | 7 | **Privatise** | none applied | HMAC pseudonym per cluster written *inside* each record; per-patient date shift; 5-year age bands; village → tehsil/district; PIN → 3-digit prefix; k-anonymity pass on (age band, gender, district, admission week, rare dx) |
-| 8 | **Sanitise** | per-format processors | apply findings with overlap resolution; rename PII headers, keys and filenames; decode base64, clean it and re-encode or drop it; FHIR-aware rewrite |
+| 8 | **Sanitise** | IR field transformer (baseline rules on cells, JSON strings and keys, text) + renderers; base64 payloads decoded, cleaned, re-encoded | apply findings with overlap resolution; rename PII headers, keys and filenames; decode base64, clean it and re-encode or drop it; FHIR-aware rewrite |
 | 9 | **Export** | starter-identical bytes | + `entities` totals in the report, renamed-file mapping, `out` locators after suppression |
 | 10 | **Self-check** | report completeness, outputs exist | + PII re-scan of side channels with the release's own known-PII set |
+
+### The common IR (Phase 1)
+
+```
+Document
+├── source   SourceFile(rel, sha256, size, ext, format, encoding, delimiter, extension_mismatch)
+├── records  ["row:0", …] | ["/visits/0", …] | ["doc"]          ← exactly what records.jsonl reports
+├── fields   Field(address, path, record, channel, kind, value, label, fhir, segments, parent)
+│              address  "@header/2" · "row:3/1" · "/visits/0/doctor" · "/a/b#key" · "doc" · "@filename/0" · "<parent>#b64/0"
+│              channel  content · header · key · metadata · base64 · filename
+│              kind     header · cell · json_key · json_string/number/bool/null · text · filename · base64_text
+├── native   parsed rows / JSON tree / text (renderers rebuild output from this)
+└── fhir     FhirIndex(entries[fullUrl, type, id], references[pointer → target entry | contained | unresolved])
+```
+
+Detectors read `fields` and never parse formats themselves. The sanitiser returns
+`address → new value`; the renderer rebuilds the file with the same structure. A base64 payload is a
+child `Field` (channel `base64`), and its parent's segment says how to re-encode it.
 
 ### Why two passes
 Identity resolution needs evidence from **every** file before any record can be pseudonymised. A
@@ -67,7 +85,7 @@ lives only in memory and is never serialised (see the threat model).
 
 | Boundary | Rule |
 |---|---|
-| input → process | never follow a symlink out of the root; cap sizes; never trust the extension (Phase 1) |
+| input → process | never follow a symlink out of the root; cap sizes; content-based detection (the extension is only evidence); bounded JSON |
 | process → release | only sanitised content crosses; quarantined files cross as a hash and a reason code only |
 | process → stdout/stderr/logs | counts and fixed strings only; no tracebacks (they can contain values) |
 | secret | env → `ReleaseSecret` → HMAC only; refuses `repr`, `str`, format and pickle |
@@ -85,6 +103,7 @@ lives only in memory and is never serialised (see the threat model).
 ## 5. Performance envelope
 
 Budget: 2 CPUs, 4 GB RSS for the whole process tree, 15 minutes (`time_good_s` = 60 s on the standard
-profile). Phase 0 handles the 200-file practice set in about 0.1 s at about 40 MB peak RSS. Design rules:
+profile). Phase 1 handles the 200-file practice set in 0.31 s at 27 MB peak RSS, and a 10× replica
+(2,000 files) in 2.76 s at 34 MB (linear time, flat memory). Design rules:
 stream-hash oversized files, keep one decoded copy per file, block-based linking (no O(n²)
 all-pairs), and use no multiprocessing unless it is measured to help, because a second process doubles RSS.
