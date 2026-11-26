@@ -89,6 +89,26 @@ sender role.
 **Accepted when:** dev pairwise precision ≥ 0.98, F0.5 ≥ 0.9; 0 wrongly merged people; the
 different-secret test XPASSes (remove the `xfail`).
 ✅ Measured: pairwise precision `1.0000`, recall `0.9871`, F0.5 `0.9974`, B-cubed F1 `0.9936`, `0` wrongly merged people, `100%` homonym separation, `100%` fragmented trap, `96.3%` language trap, `100%` pseudonym consistency (`772/772`); `test_different_secret_changes_output` passes (`xfail` removed); `check_submission.py --run` READY with 0 warnings; `766 passed` across Python 3.10/3.12/3.13; 1× 2.1 s / 37.9 MB RSS, 10× 22.4 s / 113.7 MB RSS.
+⚠ These figures pre-date the independent audit, which reproduced six false-merge classes that the original tests did
+not cover (REJECT for merging `32fe8fc`).
+
+## Phase 3.1: false-merge remediation ✅ (local; evidence: [PHASE3_REMEDIATION.md](../evaluation/PHASE3_REMEDIATION.md))
+- R1/R2: identifier ownership (relative-labelled fields, relative JSON keys, kinship cues in text, FHIR RelatedPerson)
+  plus a relative-ID veto.
+- R3: insurance and e-mail are corroborators only.
+- R4: whole-name compatibility under a global ID.
+- R5: reliable-hospital cross-hospital guard; short and hospital-type prefixes are not distinctive.
+- R6: typed digit cores.
+- R7: same-issuer MRN rule with the `DATASET.md` re-registration exception.
+- Complete-linkage weak-merge vetoes; capped-block abstention; per-record pseudonym self-check.
+
+✅ Measured:
+- 46 regression tests (23 of the first 41 failed on `32fe8fc`);
+- 812 tests pass on Python 3.10/3.12/3.13;
+- practice metrics unchanged (P 1.0000 / R 0.9871 / F0.5 0.9974, 0 wrong merges);
+- official tools exit 0.
+
+**Next:** a fresh independent audit, then the red-team re-evaluation.
 
 ## Phase 4: privacy transformation (25 pts, about 1 day)
 - Per-patient date shift on every date of that patient (all formats, incl. FHIR `dateTime` and

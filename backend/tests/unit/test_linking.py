@@ -85,9 +85,9 @@ def _ev(
     if mrn:
         norm = normalize_mrn(mrn, None if is_lab else hospital)
         assert norm is not None
-        scope, canon, core, dist = norm
+        scope, canon, core, dist = norm  # core is typed since Phase 3.1: "<id type>:<digits>"
         local_ids.add((scope, canon))
-        if len(core) >= 5:
+        if len(core.split(":", 1)[1]) >= 5:
             local_cores.add((scope, core))
         raw_mrns.add((canon, dist))
     dobs = set()
@@ -112,6 +112,7 @@ def _ev(
         record=RecordKey(rel, loc),
         hospital=hospital,
         is_external_lab=is_lab,
+        hospital_reliable=hospital is not None,  # an explicitly named hospital is a known issuer (Phase 3.1)
         aadhaar=frozenset([aadhaar]) if aadhaar else frozenset(),
         abha_number=frozenset([abha]) if abha else frozenset(),
         local_ids=frozenset(local_ids),

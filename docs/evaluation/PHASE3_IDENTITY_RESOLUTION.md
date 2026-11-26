@@ -6,6 +6,20 @@ Architecture & threat analysis: [PHASE3_IDENTITY_RESOLUTION.md](../architecture/
 All numbers below come from commands actually executed on 2026-11-27. Practice-dataset metrics are a
 rough self-check, not an official hidden-dataset score (`organiser-toolkit/docs/SCORING.md`).
 
+> **Phase 3.1 update (read this first).** The sections below record the *original* `32fe8fc` measurements.
+> An independent audit then reproduced six false-merge classes that this suite did not cover:
+> relative-owned Aadhaar, family insurance and e-mail, surname-only names under a shared ID, prefixed MRNs
+> across hospitals, IPD-vs-UHID digit cores, and distinct same-hospital UHIDs. "Zero wrong merges" below was
+> true for the practice data and the original tests only, **not** for those patterns.
+>
+> All six are fixed and pinned by 46 regression tests; see
+> [PHASE3_REMEDIATION.md](PHASE3_REMEDIATION.md). After the fixes:
+> - `pytest`: **812 passed** on Python 3.10.20, 3.12.13 and 3.13.7;
+> - the practice metrics are unchanged (TP 6,803 / FP 0 / FN 89; precision 1.0000, recall 0.9871,
+>   F0.5 0.9974; 0 wrong merges), because the practice data contains none of the fixed patterns;
+> - all three official tools exit 0, and `check_submission.py --run` is READY with no warnings;
+> - performance: 200 files 2.28 s / 41 MB, 2,000 files 22.4 s / 126 MB.
+
 ---
 
 ## 1. Practice Dataset Measurements (200 files, 822 records)

@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from clinveil.detection.identifiers import mrn_digit_core
 from clinveil.linking.models import (
     DateEvidence,
     MatchOutcome,
@@ -19,7 +20,7 @@ from clinveil.linking.models import (
     RecordEvidence,
     RecordKey,
 )
-from clinveil.linking.normalize import best_name_grade
+from clinveil.linking.normalize import best_name_grade, id_type, is_authoritative_core
 
 _FULL_MATCH_GRADES = frozenset({NameGrade.EXACT_FULL, NameGrade.VARIANT_FULL, NameGrade.ABBREVIATED_FULL})
 _COMPATIBLE_GRADES = _FULL_MATCH_GRADES | frozenset({NameGrade.FIRST_ONLY_MATCH})
@@ -31,6 +32,8 @@ class ClusterProfile:
 
     members: list[RecordKey] = field(default_factory=list)
     hospitals: set[str] = field(default_factory=set)
+    #: Hospitals reliably established for this cluster (R5): only these can prove "different issuer".
+    reliable_hospitals: set[str] = field(default_factory=set)
     has_non_lab_hospital: bool = False
     is_external_lab_only: bool = True
     aadhaar: set[str] = field(default_factory=set, repr=False)
@@ -52,6 +55,7 @@ class ClusterProfile:
     villages: set[str] = field(default_factory=set, repr=False)
     districts: set[str] = field(default_factory=set, repr=False)
     pins: set[str] = field(default_factory=set, repr=False)
+    relative_global_ids: set[str] = field(default_factory=set, repr=False)
     ambiguous_doc: bool = False
     _seen_pnames: set[tuple[str, ...]] = field(default_factory=set, repr=False)
     _seen_rnames: set[tuple[str, ...]] = field(default_factory=set, repr=False)
@@ -63,9 +67,13 @@ class ClusterProfile:
         raise TypeError("ClusterProfile cannot be serialised")
 
     @classmethod
-    def from_record(cls, ev: RecordEvidence) -> ClusterProfile:
+    def from_record(cls, ev: RecordEvidence, reliable_slugs: frozenset[str] = frozenset()) -> ClusterProfile:
+        """``reliable_slugs``: hospital slugs established reliably anywhere in the run, so a file-stem
+        guess that matches a real facility elsewhere (``sanjeevani_registration.csv``) also counts."""
+        own = ev.hospital if (ev.hospital and not ev.is_external_lab) else None
         prof = cls(
             members=[ev.record],
+            reliable_hospitals={own} if own and (ev.hospital_reliable or own in reliable_slugs) else set(),
             hospitals={ev.hospital} if (ev.hospital and not ev.is_external_lab) else set(),
             has_non_lab_hospital=bool(ev.hospital and not ev.is_external_lab),
             is_external_lab_only=ev.is_external_lab or ev.hospital is None,
@@ -86,6 +94,7 @@ class ClusterProfile:
             villages=set(ev.villages),
             districts=set(ev.districts),
             pins=set(ev.pins),
+            relative_global_ids=set(ev.relative_global_ids),
             ambiguous_doc=ev.ambiguous_doc,
         )
         for n in ev.patient_names:
@@ -108,6 +117,7 @@ class ClusterProfile:
         self.members.extend(other.members)
         self.members.sort()
         self.hospitals |= other.hospitals
+        self.reliable_hospitals |= other.reliable_hospitals
         self.has_non_lab_hospital = self.has_non_lab_hospital or other.has_non_lab_hospital
         self.is_external_lab_only = self.is_external_lab_only and other.is_external_lab_only
         self.aadhaar |= other.aadhaar
@@ -131,12 +141,21 @@ class ClusterProfile:
         self.villages |= other.villages
         self.districts |= other.districts
         self.pins |= other.pins
+        self.relative_global_ids |= other.relative_global_ids
         self.ambiguous_doc = self.ambiguous_doc or other.ambiguous_doc
 
     @property
     def has_global_id(self) -> bool:
-        return bool(
-            self.aadhaar or self.abha_number or self.abha_address or self.pan or self.insurance_id or self.email
+        """Person-unique identifiers only (insurance and e-mail are household-shareable, R3)."""
+        return bool(self.aadhaar or self.abha_number or self.abha_address or self.pan)
+
+    def own_global_ids(self) -> set[str]:
+        """The patient's own person-unique IDs in the ``relative_global_ids`` key format."""
+        return (
+            {"aadhaar|" + x for x in self.aadhaar}
+            | {"abha|" + x for x in self.abha_number}
+            | {"abhaa|" + x for x in self.abha_address}
+            | {"pan|" + x for x in self.pan}
         )
 
     @property
@@ -161,14 +180,54 @@ def _year_min_diff(a: set[int], b: set[int]) -> int:
     return min(abs(x - y) for x in a for y in b)
 
 
+def _age_max_diff(a: set[int], b: set[int]) -> int:
+    return max(abs(x - y) for x in a for y in b)
+
+
+def _authoritative_ids_by_scope(c: ClusterProfile) -> dict[str, set[str]]:
+    """Known-issuer scope -> the patient's own MRN/UHID keys (``type:digits``; admissions/visits excluded).
+
+    Compared by type + last digit run without leading zeros, so ``UHID-0045123`` and
+    ``UHID/45123`` are the same key (the veto errs towards NOT firing).
+    """
+    out: dict[str, set[str]] = {}
+    for scope, canon in c.local_ids:
+        if scope == "unscoped":
+            continue
+        t = id_type(canon)
+        core = mrn_digit_core(canon).lstrip("0") or "0"
+        key = f"{t}:{core}"
+        if is_authoritative_core(key):
+            out.setdefault(scope, set()).add(key)
+    return out
+
+
+def _distinct_mrns_same_issuer(a: ClusterProfile, b: ClusterProfile) -> bool:
+    sa, sb = _authoritative_ids_by_scope(a), _authoritative_ids_by_scope(b)
+    return any(sa[s].isdisjoint(sb[s]) for s in sa.keys() & sb.keys())
+
+
+def _complete_linkage_conflicts(a: ClusterProfile, b: ClusterProfile) -> list[str]:
+    """Weak-merge vetoes checked against EVERY member value, not the closest one (Phase 3.1).
+
+    A cluster's evidence is the union of its members, so "closest value" checks become more
+    permissive as a cluster grows (A=30, B=33 joined strongly; C=36 then looks only 3 years
+    from B). For merges that rest on names and corroborators only, every pair must agree.
+    """
+    out: list[str] = []
+    if a.ages and b.ages and _age_max_diff(a.ages, b.ages) > 3:
+        out.append("conflict_age_span")
+    if a.birth_years and b.birth_years and _age_max_diff(a.birth_years, b.birth_years) > 1:
+        out.append("conflict_birth_year_span")
+    if a.dobs and b.dobs and not all(da.matches(db) for da in a.dobs for db in b.dobs):
+        out.append("conflict_dob_any")
+    if a.genders and b.genders and len(a.genders | b.genders) > 1:
+        out.append("conflict_gender_any")
+    return out
+
+
 def _full_names(names: list[NameEvidence]) -> tuple[NameEvidence, ...]:
     return tuple(n for n in names if not n.is_single_token and not n.is_initial_only)
-
-
-def _names_share_any_token(a: list[NameEvidence], b: list[NameEvidence]) -> bool:
-    ta = {tok for n in a for tok in n.skeleton_tokens if len(tok) >= 2}
-    tb = {tok for n in b for tok in n.skeleton_tokens if len(tok) >= 2}
-    return bool(ta & tb)
 
 
 def _names_phonetically_compatible(a: list[NameEvidence], b: list[NameEvidence]) -> bool:
@@ -222,6 +281,9 @@ def hard_conflicts(
     conflicts: list[str] = []
     if a.ambiguous_doc or b.ambiguous_doc:
         conflicts.append("conflict_ambiguous_doc")
+    # 0. One side's own person-unique ID is the other side's RELATIVE's ID: different people (R1/R2)
+    if (a.relative_global_ids & b.own_global_ids()) or (b.relative_global_ids & a.own_global_ids()):
+        conflicts.append("conflict_relative_id_owner")
     # 1. Conflicting validated global identifiers (always fatal)
     if a.aadhaar and b.aadhaar and a.aadhaar.isdisjoint(b.aadhaar):
         conflicts.append("conflict_aadhaar")
@@ -242,16 +304,18 @@ def hard_conflicts(
         conflicts.append("conflict_age")
     # 5. Incompatible patient names
     fa, fb = _full_names(a.patient_names), _full_names(b.patient_names)
-    if fa and fb:
+    if has_global_match and a.patient_names and b.patient_names:
+        # Even with a person-unique ID match, names must be phonetically compatible as WHOLE names
+        # (given name included). A shared surname alone no longer passes (Phase 3.1, R4); spelling,
+        # script, order and missing-given-name variants still do. When both sides have full names,
+        # only full names decide: a surname-only fragment cannot vouch for a different given name.
+        na, nb = (list(fa), list(fb)) if (fa and fb) else (a.patient_names, b.patient_names)
+        if best_name_grade(tuple(na), tuple(nb)) is NameGrade.CONFLICT and not _names_phonetically_compatible(na, nb):
+            conflicts.append("conflict_name_disjoint")
+    elif fa and fb:
         grade = best_name_grade(fa, fb)
         if grade is NameGrade.CONFLICT:
-            if has_global_match:
-                # Guardrail C: even with a global ID match, completely disjoint full names block merge
-                if not _names_phonetically_compatible(a.patient_names, b.patient_names) and not _names_share_any_token(
-                    a.patient_names, b.patient_names
-                ):
-                    conflicts.append("conflict_name_disjoint")
-            elif has_scoped_id_match:
+            if has_scoped_id_match:
                 if not _names_phonetically_compatible(a.patient_names, b.patient_names):
                     conflicts.append("conflict_name")
             else:
@@ -286,16 +350,16 @@ def shared_global_ids(a: ClusterProfile, b: ClusterProfile) -> list[str]:
         reasons.append("shared_abha_address")
     if a.pan & b.pan:
         reasons.append("shared_pan")
-    if a.insurance_id & b.insurance_id:
-        reasons.append("shared_insurance_id")
-    if a.email & b.email:
-        reasons.append("shared_email")
     return reasons
 
 
 def shared_scoped_mrns(a: ClusterProfile, b: ClusterProfile, name_grade: NameGrade) -> list[str]:
     """Check hospital-namespaced MRN/UHID matches while strictly blocking cross-hospital collisions."""
     reasons: list[str] = []
+    # Two DIFFERENT reliably known (non-lab) hospitals: a shared MRN string, prefixed or not, is no
+    # evidence (R5). A slug merely guessed from a file name is not proof of a different issuer.
+    if a.reliable_hospitals and b.reliable_hospitals and a.reliable_hospitals.isdisjoint(b.reliable_hospitals):
+        return reasons
     # Exact same (hospital_scope, canonical_mrn) excluding "unscoped"
     scoped_a = {(s, m) for s, m in a.local_ids if s != "unscoped"}
     scoped_b = {(s, m) for s, m in b.local_ids if s != "unscoped"}
@@ -314,10 +378,8 @@ def shared_scoped_mrns(a: ClusterProfile, b: ClusterProfile, name_grade: NameGra
     if dist_a & dist_b:
         reasons.append("shared_prefixed_mrn")
         return reasons
-    # Generic MRN shared with an external lab / unknown-hospital document:
-    # STRICTLY FORBIDDEN when both sides belong to DIFFERENT known non-lab hospitals!
-    if a.hospitals and b.hospitals and a.hospitals.isdisjoint(b.hospitals):
-        return []
+    # Generic MRN shared with an external lab / unknown-hospital document (different known
+    # hospitals were already excluded above)
     raw_a = {m for m, _ in a.raw_mrns}
     raw_b = {m for m, _ in b.raw_mrns}
     if raw_a & raw_b:
@@ -348,6 +410,8 @@ def compare_profiles(
     has_global = bool(global_reasons)
     has_scoped = bool(mrn_reasons)
     conflicts = hard_conflicts(a, b, has_global_match=has_global, has_scoped_id_match=has_scoped)
+    if not has_global and not has_scoped:
+        conflicts = conflicts + tuple(_complete_linkage_conflicts(a, b))
     if conflicts:
         return PairDecision(MatchOutcome.CONFLICT, MatchStrength.NONE, tuple(global_reasons + mrn_reasons), conflicts)
 
@@ -361,6 +425,18 @@ def compare_profiles(
 
     # Tier 3: Corroborated full patient name (requires >= 1 independent corroborator)
     corroborators = _supporting_corroborators(a, b)
+    # Different authoritative patient MRNs from the SAME issuer (R7). Usually two different patients;
+    # but DATASET.md documents re-registration ("some re-register at the same hospital with a new ID"),
+    # so the only exception is a full-name match with an exact DOB AND another independent corroborator.
+    if _distinct_mrns_same_issuer(a, b):
+        reregistration = (
+            name_grade in (NameGrade.EXACT_FULL, NameGrade.VARIANT_FULL)
+            and "corrob_dob" in corroborators
+            and len(corroborators) >= 2
+        )
+        if not reregistration:
+            return PairDecision(MatchOutcome.CONFLICT, MatchStrength.NONE, (), ("conflict_scoped_mrn",))
+        corroborators = [*corroborators, "reregistration_same_issuer"]
     if name_grade in _FULL_MATCH_GRADES:
         if corroborators:
             return PairDecision(
@@ -398,6 +474,11 @@ def _supporting_corroborators(a: ClusterProfile, b: ClusterProfile) -> list[str]
         out.append("corrob_dob")
     if a.phones and b.phones and (a.phones & b.phones):
         out.append("corrob_phone")
+    # Household-shareable identifiers: corroborate a matching name, never identify alone (R3)
+    if a.insurance_id & b.insurance_id:
+        out.append("corrob_insurance")
+    if a.email & b.email:
+        out.append("corrob_email")
     if a.relative_names and b.relative_names:
         rgrade = best_name_grade(tuple(a.relative_names), tuple(b.relative_names))
         if rgrade in _COMPATIBLE_GRADES:

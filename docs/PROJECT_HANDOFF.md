@@ -95,10 +95,10 @@ k-anonymity suppression (Phases 3–4).
 | Item | Value (verified with `git`) |
 |---|---|
 | Active branch | `phase-3-identity-resolution` |
-| HEAD | the Phase 3 identity resolution commit (its hash is recorded in the next update, because a commit cannot contain its own hash) |
-| Before it | `9205b5a` Merge PR #3 (`phase-2.1-remediation`, incl. `a74851c` Python 3.10 CI fix) |
+| HEAD | the Phase 3.1 false-merge remediation commit (its hash is recorded in the next update, because a commit cannot contain its own hash) |
+| Before it | `32fe8fc` Phase 3 implementation → `9205b5a` Merge PR #3 (`phase-2.1-remediation`, incl. `a74851c` Python 3.10 CI fix) |
 | `main` / `origin/main` | both `9205b5a` "Merge pull request #3 from …/phase-2.1-remediation" (Phase 0 + 1 + 2 + 2.1) |
-| Phase 3 pushed / merged? | **No.** Exists only as a local commit on `phase-3-identity-resolution`; not pushed or merged. |
+| Phase 3 pushed / merged? | **No.** Exists only as local commits on `phase-3-identity-resolution` (`32fe8fc` + the 3.1 remediation); not pushed or merged. |
 | Remote | `origin` → https://github.com/Amartya989870xxxx/CLINVEIL.git |
 | Untracked (intentional) | `docs/research/GEMINI_PHASE2_CODE_SECURITY_AUDIT.md` |
 | Toolkit | `organiser-toolkit/` at `6c0a85a`, clean, git-ignored |
@@ -112,7 +112,8 @@ Commit history (verified):
 | `d2c4b31` → `643c95f` | Phase 1 ingestion; merged via PR #1 |
 | `53ec8ff` → `ac37504` | Phase 2 detection; merged via PR #2 |
 | `683074f` → `a74851c` → `9205b5a` | Phase 2.1 audit remediation, F1–F4, and Python 3.10 CI fix; merged via PR #3 |
-| (next commit) | Phase 3: cross-hospital patient identity resolution and cryptographic pseudonymisation (local) |
+| `32fe8fc` | Phase 3: cross-hospital patient identity resolution and cryptographic pseudonymisation (local) |
+| (next commit) | Phase 3.1: false-merge remediation after the independent Phase 3 audit (local) |
 
 **The Gemini audit report is deliberately untracked.** It quotes practice canary and patient names. Never
 commit it; if it must be versioned, commit a *redacted* copy. Its findings and our responses are in
@@ -268,8 +269,46 @@ Backend paths are under `backend/src/clinveil/`. Package size at time of writing
   fragmented trap `100%`, homonym separation `2/2`, pseudonym consistency `772/772 = 100%`); `check_submission.py --run`
   **`READY TO SUBMIT` with 0 warnings**; 1× runtime 2.1 s / 37.9 MB RSS; 10× (2,000 files) 22.4 s / 113.7 MB RSS.
 - **Details:** `docs/architecture/PHASE3_IDENTITY_RESOLUTION.md`, `docs/evaluation/PHASE3_IDENTITY_RESOLUTION.md`.
-- **Remaining:** push/merge decision belongs to the user; Phase 4 privacy transformations (date shifting, age bands,
-  generalisation, k-anonymity).
+- **Caveat (added by the independent audit):** "0 wrong merges" above held for the practice data and the original
+  tests only. The audit of `32fe8fc` reproduced six false-merge classes on invented data and returned **REJECT**;
+  see Phase 3.1.
+
+### Phase 3.1: False-merge remediation ✅ (local, unpushed; ready for a fresh independent audit)
+- **Objective:** fix the false merges reproduced by the independent audit of `32fe8fc`, without redesigning the
+  engine or its cryptography.
+- **Reproduced first:** `tests/regression/test_phase31_false_merges.py` gave 23 failed / 18 passed on `32fe8fc`;
+  after the fixes it has 46 tests, all passing.
+- **Fixes:**
+  - R1/R2: identifier **ownership** (relative-labelled fields and JSON keys, kinship cues in text, FHIR
+    `RelatedPerson`; ambiguous owners unused) and the `conflict_relative_id_owner` veto.
+  - R3: insurance/PMJAY/ESIC and e-mail are corroborators, not global IDs.
+  - R4: under a shared global ID, whole names must be compatible (a surname alone no longer passes).
+  - R5: the cross-hospital guard runs first and uses reliably established hospitals; short and hospital-type
+    MRN prefixes are not distinctive.
+  - R6: typed digit cores (patient / admission / visit / prefix).
+  - R7: distinct same-issuer MRNs block weak merges, except the `DATASET.md` re-registration case
+    (full name + exact DOB + one more corroborator).
+  - Complete-linkage vetoes for weak merges; capped full-name blocks abstain.
+  - The self-check validates pseudonyms **per record**.
+  - Pseudonym bit-selection documentation corrected (low 30 bits of the first 40-bit slice).
+  - `for_document()` is no longer O(files × records).
+- **Files:**
+  - `linking/{extract,normalize,matcher,cluster,models,pseudonyms,linker}.py`;
+  - `validation/contract.py`, `privacy/pseudonym.py` (docstring only);
+  - new `tests/regression/test_phase31_false_merges.py`; `tests/unit/test_linking.py` (helper API only);
+  - docs.
+- **Tests & validation (run 2026-11-27):**
+  - `pytest` **812 passed** on Python 3.10.20, 3.12.13 and 3.13.7;
+  - ruff check/format exit 0 (99 files);
+  - `validate_output.py`, `check_dev.py` and `check_submission.py --run` exit 0 (READY, no warnings);
+  - practice: TP 6,803 / FP 0 / FN 89, precision 1.0000, recall 0.9871, F0.5 0.9974, **0 wrong merges**
+    (unchanged; the practice data has none of the fixed patterns);
+  - same-secret determinism; different secret gives 0 shared pseudonyms; input unchanged; side channels clean;
+    19 FHIR Bundles with 0 unresolved references;
+  - 1× 2.28 s / 41 MB; 10× 22.4 s / 126 MB.
+- **Details:** `docs/evaluation/PHASE3_REMEDIATION.md`.
+- **Remaining:** a fresh independent audit; the red-team re-evaluation against Phase 2.1/3.1; the push/merge
+  decision (user); Phase 4.
 
 ### Phase 4: Privacy transformations 📋 not started
 - **Exists today:** `privacy/generalize.py::age_band()` only; `config/policy.yaml` carries `age_band_years`,
@@ -315,6 +354,7 @@ Backend paths are under `backend/src/clinveil/`. Package size at time of writing
 | O10 | **Evidence limits** | Practice data contains none of the patterns fixed in Phase 2.1 (its output is byte-identical to Phase 2); the new protections are evidenced by team-written tests and a team-written generator, not by the sealed dataset. No official score has ever been computed. |
 | O11 | **No Project Brief PDF in the repo** | `check_submission.py` reports finding one only because a practice input contains a PDF. The 2-page brief (planned at `docs/brief/`, which does not exist yet) does not exist. |
 | O12 | **Phase 3 not pushed/merged** | Phase 2.1 merged in `9205b5a` (PR #3); Phase 3 committed locally on `phase-3-identity-resolution`, awaiting user push/merge. |
+| O14 | **Identity-linking limits (Phase 3.1)** | Ownership relies on labels and the value's own text segment (an ID after a relative's unlabelled name with no kinship word is attributed to the patient). Two hospitals known only from file stems without a hospital word are "unknown", so only prefix rules protect them. The `DATASET.md` re-registration exception can link two same-name patients sharing an exact DOB and one more corroborator. Practice data contains none of these patterns; hidden datasets are untested. See `PHASE3_REMEDIATION.md` §6. |
 | O13 | **No date shifting or quasi-identifier generalisation** | Phase 4 privacy transformations (per-patient date shift, age bands, location generalisation, k-anonymity) remain to be implemented. |
 
 Other known behaviours: DOB is replaced by `[DOB]`; binary attachments are withheld (JSON member removed, or
@@ -419,8 +459,9 @@ Document map: `docs/architecture/SYSTEM_ARCHITECTURE.md` (pipeline, trust bounda
 
 ## 7. Next recommended engineering steps
 
-1. **User decision:** push and merge `phase-2.1-remediation` (or request changes); decide the O1 symlink trade-off.
-2. **Phase 3:** evidence graph and pseudonym insertion (see §3), using `name_key_strict` + corroborators.
+1. **Fresh independent audit of Phase 3 + 3.1**, then the user's push/merge decision; decide the O1 symlink trade-off.
+2. **Red-team re-evaluation** of the frozen red-team dataset against the Phase 3.1 commit (the existing analysis measured
+   Phase 2 `ac37504`), adding relative-ID / household-ID cases and profile-aggregation (A4) measurement.
 3. **Phase 4:** keyed per-patient date shifting, truthful age bands, location generalisation, k-anonymity.
 4. Phase 5/6: own FHIR structural validator, `metrics/`, mutated practice copy, hex decoding in text (O4).
 5. Write the 2-page Project Brief PDF from measured numbers only.
@@ -463,6 +504,7 @@ Keep numbers traceable to a command you ran. A commit cannot contain its own has
 
 | Date | Agent | Entry |
 |---|---|---|
+| 2026-11-27 | Claude Opus 5.5 | Phase 3.1 false-merge remediation on `phase-3-identity-resolution`, committed locally on top of `32fe8fc`. Reproduced first: the new `test_phase31_false_merges.py` gave 23 failed / 18 passed on `32fe8fc`; now 46/46. Fixed R1–R7 (identifier ownership plus a relative-ID veto; insurance/e-mail as corroborators; whole-name compatibility under global IDs; reliable-hospital cross-hospital guard; typed digit cores; same-issuer MRN rule with the documented re-registration exception), complete-linkage weak-merge vetoes, capped-block abstention, per-record pseudonym self-check, pseudonym bit-selection docs, and per-file link index. Run: pytest 812 passed on Python 3.10.20 / 3.12.13 / 3.13.7; ruff exit 0; `validate_output.py` / `check_dev.py` / `check_submission.py --run` exit 0 (READY, no warnings); practice TP 6,803 / FP 0 / FN 89, P 1.0000 / R 0.9871 / F0.5 0.9974, 0 wrong merges; 1× 2.28 s / 41 MB, 10× 22.4 s / 126 MB. Regressions: none found. Not pushed or merged. Next: fresh independent audit, then the red-team re-evaluation. |
 | 2026-11-27 | Antigravity | Implemented Phase 3 (cross-hospital patient identity resolution and cryptographic pseudonymisation) on branch `phase-3-identity-resolution` from `9205b5a`. Added modular `linking/` package (`models.py`, `normalize.py`, `extract.py`, `matcher.py`, `cluster.py`, `pseudonyms.py`, `linker.py`), domain-separated versioned HMAC-SHA256 (`psn|v1|...`) with collision counter in `privacy/pseudonym.py`, single-patient JSON report locator handling in `parsing/json_format.py`, schema-preserving in-record pseudonym insertion in `sanitization/processors.py`, two-pass pipeline wiring in `pipeline.py`, pre-exit pseudonym consistency check in `validation/contract.py`, cache registration in `detection/caches.py`, and synthetic/adversarial tests (`tests/unit/test_linking.py`, `tests/integration/test_phase3_identity_resolution.py`). Removed `xfail` on `test_different_secret_changes_output`. Run: `ruff check` / `ruff format --check` exit 0 (99 files); `pytest` 766 passed / 0 xfailed across Python 3.10, 3.12, and 3.13; `validate_output.py` CONTRACT OK; `check_dev.py` 0/3230 leaked, 0/4 canaries, 4855/4855 probes, linking precision 1.00 / recall 0.99 / F0.5 1.00 / 0 wrong merges; `check_submission.py --run` READY TO SUBMIT (0 warnings); 1× 2.1 s / 37.9 MB RSS, 10× 22.4 s / 113.7 MB RSS. Not pushed or merged. Next: user review/push/merge of Phase 3, then Phase 4 privacy transformations. |
 | 2026-11-27 | Antigravity | Fixed Python 3.10 GitHub Actions CI failure blocking PR #3 (`phase-2.1-remediation` → `main`), committed locally on top of `fab12fb`. Root cause: `organiser-toolkit/dev/input/misc/deep_export.json` (1,500-level nested JSON) triggers `RecursionError` in CPython 3.10 `json.loads()`, which was uncaught in `backend/scripts/dev_eval.py` (`Parsed.__init__` only suppressed `ValueError`). Files changed: `backend/scripts/dev_eval.py`, `backend/tests/regression/test_phase2_release.py`, new `backend/tests/unit/test_dev_eval.py`, `docs/evaluation/PHASE2_REMEDIATION.md` (§9), this file. Run: `ruff check` / `ruff format --check` exit 0 (91 files); `pytest` 745 passed / 1 xfailed on Python 3.10 (`uv`), Python 3.12 (`uv`), and local `.venv` (Python 3.13); Python 3.10 `validate_output.py` (CONTRACT OK), `check_dev.py` (0/3230, 0/4 canaries, 4855/4855), `dev_eval.py` (0.0/3226, 0/8 canaries, 98.8% probes, 99.8% retention), same-secret determinism, and `check_submission.py --repo . --run` (READY, known E5 warning) all exit 0. Regressions: none. Not pushed or merged. Next: user pushes CI fix to PR #3 and merges, then Phase 3 linking. |
 | 2026-11-26 | Claude Opus 5.5 | Phase 2.1 final review fixes F1–F4, committed on top of `e6021fa` (the handoff commit created in the entry below). The review file was not present in the repo; findings taken from the task description and reproduced first (15 of 30 new tests failed on `e6021fa`, all 30 pass now). Files changed: `ingestion/discovery.py`, `pipeline.py`, `parsing/attachments.py`, `sanitization/processors.py`, `detection/views.py`, new `tests/regression/test_phase21_final_review.py`, docs (`PHASE2_REMEDIATION.md` §8, this file, `THREAT_MODEL.md`, `README.md`, `PHASE2_DETECTION.md`, `IMPLEMENTATION_PLAN.md`). Run: pytest 741 passed / 1 xfailed; ruff exit 0; `validate_output.py`, `check_dev.py`, `check_submission.py --run` exit 0 (READY, known E5 warning); practice output byte-identical to Phase 2. Regressions: none found. Outstanding decisions: push/merge; O1 symlink trade-off. Next: Phase 3 linking. |

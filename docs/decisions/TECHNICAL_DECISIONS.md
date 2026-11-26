@@ -203,6 +203,48 @@ before every merge so weak similarities can never transitively bridge conflictin
 
 ## D31. Order-independent canonical cluster keys (Phase 3)
 Each resolved cluster's HMAC input key is built strictly from its sorted normalised identity evidence
-(`aadhaar` > `abha` > `abhaa` > `pan` > `ins` > `email` > `mrn` > `demo`), never from file traversal order or
+(`aadhaar` > `abha` > `abhaa` > `pan` > `mrn` > `demo`; insurance and e-mail removed in 3.1, see D33), never from file traversal order or
 temporary cluster indices. Cleartext evidence, clusters, and canonical keys are discarded in memory right
 after pseudonym assignment and never logged or serialised.
+
+## D32. Identifier ownership: patient, relative or ambiguous (Phase 3.1)
+An identifier's position inside a patient record does not make it the patient's. A relative-labelled field
+(`Father Aadhaar`, `पिता आधार`, `Guardian UID`), a relative JSON container (`guardian: {aadhaar}`), FHIR
+`RelatedPerson.identifier`, or a kinship cue in the value's own text segment (`Husband's Aadhaar …`,
+`Aadhaar of husband: …`, `पति का आधार …`) makes it the relative's. A relation marker in that segment
+(`W/o <Name> Aadhaar …`) makes the owner ambiguous, and the value is not used. Relative-owned person-unique IDs
+are kept apart and serve only as a veto: if one record's own ID is another record's relative ID, they are
+different people. Trade-off: some patient-owned IDs written after a relation marker are no longer used (recall),
+in exchange for never merging relatives.
+
+## D33. Insurance and e-mail are corroborators, not identities (Phase 3.1)
+ESIC, PMJAY and other family policy IDs, and household e-mail addresses, are routinely shared by several
+people. They now corroborate a matching full name (like phone or DOB) and never trigger a merge on their own.
+They are not used as canonical pseudonym key material.
+
+## D34. Reliable issuers and typed identifiers (Phase 3.1)
+The same MRN string from two *reliably known* hospitals is no evidence of identity, whatever its prefix.
+"Reliable" means one of:
+- a FHIR system or Organization;
+- a facility field;
+- a letterhead;
+- a file name containing a hospital word;
+- a file-stem slug corroborated by one of the above elsewhere in the run.
+
+Guesses from other file stems (`master`, `nursing_adm900001`) still namespace MRNs, but cannot prove "different
+issuer". Two-letter and hospital-type prefixes (UH, GH, DH, CHC, PHC) are not issuer-distinctive. Digit cores
+carry an identifier type (patient / admission / visit / prefix), so an IPD number never matches a UHID by suffix.
+
+## D35. Same-issuer MRN rule with the documented re-registration exception (Phase 3.1)
+Different patient MRNs from the same issuer usually mean different patients and block weak merges. `DATASET.md`
+states that "some re-register at the same hospital with a new ID", and the practice data contains such a case,
+so this is not an absolute veto. A full-name match with an exact DOB plus at least one more independent
+corroborator still links. Rejected alternative: a hard veto, which split a correct practice cluster.
+
+## D36. Complete-linkage vetoes and abstention for weak merges (Phase 3.1)
+Cluster evidence is the union of its members, and "closest value" vetoes become more permissive as a cluster
+grows. Merges that rest only on names and corroborators therefore require every member pair to agree (age span
+≤ 3, birth-year span ≤ 1, compatible DOBs, one gender). Strong-ID merges keep per-visit tolerance. A full-name
+block above the cap is a dense homonym group: its members abstain from name-based merging instead of being
+reached through phone or DOB blocks.
+

@@ -5,7 +5,15 @@ without re-parsing any file. Enforces strict role separation:
 * doctor, staff, organisation, and clinical fields never enter patient identity evidence;
 * relative names enter ``relative_names`` only, never ``patient_names``;
 * masked Aadhaar and non-Verhoeff 12-digit numbers never enter ``aadhaar``;
-* low-confidence / ``field_weak`` findings never become global identifiers.
+* low-confidence / ``field_weak`` findings never become global identifiers;
+* **ownership (Phase 3.1, R1/R2):** an identifier, phone or e-mail is the patient's only when
+  nothing attributes it to someone else. A relative-labelled field (``Father Aadhaar``,
+  ``पिता आधार``, ``Guardian Mobile``), a relative JSON container (``guardian: {aadhaar: …}``)
+  or a kinship cue right before the value in text (``Husband's Aadhaar …``,
+  ``Aadhaar of husband: …``, ``पति का आधार …``) makes it *relative-owned*: it never enters
+  the patient's identity evidence, and person-unique ones (Aadhaar, ABHA, PAN) are kept
+  apart in ``relative_global_ids`` as a veto. A relation marker (``W/o <Name>``) between the
+  label and the value makes the owner *ambiguous*: the value is not used at all.
 """
 
 from __future__ import annotations
@@ -16,6 +24,7 @@ from typing import Any
 
 from clinveil.detection import views
 from clinveil.detection.engine import DocumentAnalysis
+from clinveil.detection.semantics import RELATIVE as _RELATIVE_LABEL_WORDS
 from clinveil.detection.semantics import Sem, label_tokens
 from clinveil.detection.text import digits_only
 from clinveil.linking.models import DateEvidence, NameEvidence, RecordEvidence, RecordKey
@@ -47,6 +56,33 @@ _MIDDLE_NAME_TOKS = frozenset({"middle"})
 _LAST_NAME_TOKS = frozenset({"last", "lastname", "surname", "family"})
 _RELATIVE_FIELD_SEMS = frozenset({Sem.RELATIVE_NAME})
 _SKIP_IDENTITY_SEMS = frozenset({Sem.DOCTOR_NAME, Sem.STAFF, Sem.CLINICAL})
+#: Label tokens that make a field (CSV header, JSON key or any JSON ancestor key) relative-owned.
+_KIN_LABEL_WORDS = _RELATIVE_LABEL_WORDS | frozenset(
+    "uncle aunt grandfather grandmother grandson granddaughter dada dadi nana nani bhai behen beta beti "
+    "fatherhusband father_husband".split()
+)
+#: Kinship cue directly qualifying a value in text ("Husband's Aadhaar", "Aadhaar of husband", "पति का आधार").
+_KIN_CUE_RE = re.compile(
+    r"(?i)(?<![\w])(?:father|mother|husband|wife|spouse|guardian|parents?|son|daughter|brother|sister|"
+    r"relatives?|attendant|caretaker|escort|informant|uncle|aunt|grand(?:father|mother|son|daughter)|"
+    r"pita|pati|patni|mata)(?:'s|’s)?(?![\w])|पिता|पति|पत्नी|माता|पुत्र|पुत्री|अभिभावक|भाई|बहन|परिचारक"
+)
+#: A relation marker between the label and the value ("Sunila W/o Arvel Aadhaar …"): owner unknown.
+_REL_MARKER_RE = re.compile(r"(?i)(?<![\w/])(?:[SDW]\s?/\s?O|son\s+of|daughter\s+of|wife\s+of|husband\s+of)(?![\w])")
+#: Segment boundaries in text: a value's qualifier is the text after the last one (within 60 chars).
+_SEGMENT_BOUNDARY_RE = re.compile(r"[;\n|,।]|\.(?=\s+[A-Z\u0900-\u097f])")
+_OWNED_ENTITIES = frozenset(
+    {
+        EntityType.AADHAAR,
+        EntityType.ABHA_NUMBER,
+        EntityType.ABHA_ADDRESS,
+        EntityType.PAN,
+        EntityType.INSURANCE_ID,
+        EntityType.EMAIL,
+        EntityType.PHONE,
+        EntityType.MRN,
+    }
+)
 _HOSPITAL_HEADER_RE = re.compile(
     r"(?i)^[^\n]{2,80}(?:hospital|multispeciality|multi-speciality|charitable|sadan|clinic|medical\s+cent|health\s+cent|"
     r"pathology|diagnostics?|laboratory|अस्पताल|चिकित्सालय|सदन)"
@@ -57,11 +93,13 @@ def extract_document_evidence(doc: Document, analysis: DocumentAnalysis) -> list
     """Extract one :class:`RecordEvidence` per record in ``doc``."""
     if not doc.records:
         return []
-    hospital, is_external_lab = _infer_document_hospital(doc, analysis)
+    hospital, is_external_lab, reliable = _infer_document_hospital(doc, analysis)
     single_doc = doc.records == ["doc"]
 
     if doc.source.format is Format.FHIR:
-        return [_extract_fhir_document(doc, analysis, hospital, is_external_lab)]
+        ev = _extract_fhir_document(doc, analysis, hospital, is_external_lab)
+        ev.hospital_reliable = reliable
+        return [ev]
 
     # Group fields by record locator
     by_rec: dict[str, list[Field]] = defaultdict(list)
@@ -76,7 +114,10 @@ def extract_document_evidence(doc: Document, analysis: DocumentAnalysis) -> list
 
     out: list[RecordEvidence] = []
     for loc in doc.records:
-        out.append(_extract_record(doc, loc, by_rec.get(loc, []), analysis, hospital, is_external_lab))
+        ev = _extract_record(doc, loc, by_rec.get(loc, []), analysis, hospital, is_external_lab)
+        if ev.hospital == hospital:  # a per-row facility column has already set its own (reliable) flag
+            ev.hospital_reliable = ev.hospital_reliable or reliable
+        out.append(ev)
     return out
 
 
@@ -97,9 +138,53 @@ _FACILITY_LABELS = frozenset(
 _STD_FHIR_DOMAINS = ("hl7.org", "loinc.org", "snomed.info", "abdm", "healthid", "abha", "ndhm", "aadhaar", "uidai")
 
 
+# --------------------------------------------------------------------------- ownership attribution
+def field_is_relative_owned(f: Field, sem_kind: Sem) -> bool:
+    """A field whose value belongs to a relative: relative semantics, or a kinship word in its
+    label or in any enclosing JSON key (``guardian: {aadhaar: …}``)."""
+    if sem_kind is Sem.RELATIVE_NAME:
+        return True
+    keys = [f.label] if f.label else []
+    keys += [p for p in f.path if isinstance(p, str)]
+    return any(set(label_tokens(k)) & _KIN_LABEL_WORDS for k in keys if k)
+
+
+def context_owner(text: str, start: int) -> str:
+    """Owner of a value at ``text[start:]`` from the words that qualify it: ``patient``,
+    ``relative`` (kinship cue in its segment) or ``ambiguous`` (a relation marker in its segment)."""
+    window = text[max(0, start - 60) : start]
+    cut = 0
+    for m in _SEGMENT_BOUNDARY_RE.finditer(window):
+        cut = m.end()
+    seg = window[cut:]
+    if _KIN_CUE_RE.search(seg):
+        return "relative"
+    if _REL_MARKER_RE.search(seg):
+        return "ambiguous"
+    return "patient"
+
+
 # --------------------------------------------------------------------------- hospital inference
-def _infer_document_hospital(doc: Document, analysis: DocumentAnalysis) -> tuple[str | None, bool]:
-    """Infer issuing hospital scope from structured facility fields, FHIR systems, letterhead, or path."""
+#: A file-name stem names a hospital reliably only if it says so ("apex_hospital.csv").
+_HOSPITAL_WORD_RE = re.compile(
+    r"(?i)(?:hospital|hosp\b|clinic|sadan|multi-?special|chikitsalay|medical\s*college|health\s*cent|"
+    r"\bphc\b|\bchc\b|aiims|dispensary|infirmary|अस्पताल|चिकित्सालय)"
+)
+
+
+def _infer_document_hospital(doc: Document, analysis: DocumentAnalysis) -> tuple[str | None, bool, bool]:
+    """Infer the issuing hospital scope: ``(slug, is_external_lab, reliable)``.
+
+    ``reliable`` (Phase 3.1, R5) is True for a FHIR identifier system / Organization, a facility
+    field, a letterhead, or a file name that itself contains a hospital-type word. A slug guessed
+    from any other file-name stem (``master``, ``nursing_adm900001``) still namespaces MRNs, but
+    is NOT trusted to prove that two records come from two different hospitals.
+    """
+    slug, lab, reliable = _infer_document_hospital_inner(doc, analysis)
+    return slug, lab, reliable
+
+
+def _infer_document_hospital_inner(doc: Document, analysis: DocumentAnalysis) -> tuple[str | None, bool, bool]:
     is_lab = False
     # 1. FHIR: Patient.identifier.system (exact element, skipping standard code systems) or Organization.name
     if doc.source.format is Format.FHIR:
@@ -111,11 +196,11 @@ def _infer_document_hospital(doc: Document, analysis: DocumentAnalysis) -> tuple
                 if not any(w in low for w in _STD_FHIR_DOMAINS):
                     slug, lab = normalize_hospital(f.value)
                     if slug:
-                        return slug, lab
+                        return slug, lab, True
             if f.fhir.resource_type == "Organization" and f.fhir.element == "Organization.name":
                 slug, lab = normalize_hospital(f.value)
                 if slug:
-                    return slug, lab
+                    return slug, lab, True
 
     # 2. Structured facility / hospital / lab fields ONLY (never clinical test names or package codes)
     lab_slug: str | None = None
@@ -132,7 +217,7 @@ def _infer_document_hospital(doc: Document, analysis: DocumentAnalysis) -> tuple
                 if slug:
                     lab_slug = slug
             elif slug:
-                return slug, False
+                return slug, False, True
 
     # 3. Text document letterhead (first 3 non-empty lines)
     if doc.source.format is Format.TEXT and isinstance(doc.native, str):
@@ -141,7 +226,7 @@ def _infer_document_hospital(doc: Document, analysis: DocumentAnalysis) -> tuple
             if _HOSPITAL_HEADER_RE.search(ln):
                 slug, lab = normalize_hospital(ln)
                 if slug:
-                    return slug, lab or is_lab
+                    return slug, lab or is_lab, True
 
     # 4. Path/filename stem (e.g. "registration/sanjeevani_registration.csv", "lab/...")
     parts = doc.source.rel.split("/")
@@ -151,9 +236,10 @@ def _infer_document_hospital(doc: Document, analysis: DocumentAnalysis) -> tuple
     slug, stem_lab = normalize_hospital(stem)
     if stem_lab:
         is_lab = True
+    stem_reliable = bool(_HOSPITAL_WORD_RE.search(stem))
     if slug and not is_lab:
-        return slug, False
-    return (lab_slug or (slug if is_lab else None)), is_lab
+        return slug, False, stem_reliable
+    return (lab_slug or (slug if is_lab else None)), is_lab, bool(lab_slug) or stem_reliable
 
 
 # --------------------------------------------------------------------------- standard record extraction
@@ -184,16 +270,19 @@ def _extract_record(
     villages: set[str] = set()
     districts: set[str] = set()
     pins: set[str] = set()
+    relative_ids: set[str] = set()
 
     # Check if this record overrides hospital (e.g., per-row hospital column in CSV/JSON)
     rec_hospital = hospital
     rec_is_lab = is_external_lab
+    rec_reliable = False
     for f in fields:
         if isinstance(f.value, str) and f.label and f.label.lower() in ("hospital", "facility", "hospital_name"):
             slug, lab = normalize_hospital(f.value)
             if slug:
                 rec_hospital = slug
                 rec_is_lab = lab
+                rec_reliable = True  # a per-record facility column names the issuer explicitly
                 break
 
     # Collect split name parts within this record (FirstName / MiddleName / LastName)
@@ -270,6 +359,7 @@ def _extract_record(
             birth_years=birth_years,
             villages=villages,
             pins=pins,
+            relative_ids=relative_ids,
         )
 
     # Assemble split first/middle/last names into one combined full NameEvidence (highest priority)
@@ -287,6 +377,7 @@ def _extract_record(
         record=RecordKey(doc.source.rel, loc),
         hospital=rec_hospital,
         is_external_lab=rec_is_lab,
+        hospital_reliable=rec_reliable,
         aadhaar=frozenset(aadhaar),
         abha_number=frozenset(abha_num),
         abha_address=frozenset(abha_addr),
@@ -306,6 +397,7 @@ def _extract_record(
         villages=frozenset(villages),
         districts=frozenset(districts),
         pins=frozenset(pins),
+        relative_global_ids=frozenset(relative_ids),
     )
 
 
@@ -342,6 +434,7 @@ def _extract_fhir_document(
     villages: set[str] = set()
     districts: set[str] = set()
     pins: set[str] = set()
+    relative_ids: set[str] = set()
 
     # Walk native FHIR JSON to find all Patient & RelatedPerson resources (including contained / nested Bundles)
     patients: list[dict[str, Any]] = []
@@ -472,11 +565,18 @@ def _extract_fhir_document(
                 if ev:
                     relative_names.append(ev)
 
-    # RelatedPerson resources -> relative_names only
+    # RelatedPerson resources -> relative_names; their person-unique identifiers -> relative_ids (veto only)
     for rp in related_persons:
         ev = _fhir_person_name(rp, source="fhir_related_person")
         if ev:
             relative_names.append(ev)
+        for ident in rp.get("identifier") or []:
+            if isinstance(ident, dict) and isinstance(ident.get("value"), str):
+                low = str(ident.get("system", "")).lower()
+                if any(w in low for w in ("aadhaar", "aadhar", "uidai")):
+                    _add_relative_id(_E.AADHAAR, ident["value"], "fhir", relative_ids)
+                elif any(w in low for w in ("abdm", "healthid", "abha", "ndhm")):
+                    _add_relative_id(_E.ABHA_NUMBER, ident["value"], "fhir", relative_ids)
 
     # Also inspect findings from non-Practitioner narrative / text / attachment fields for extra IDs or cues
     for f in doc.fields:
@@ -514,6 +614,7 @@ def _extract_fhir_document(
                 birth_years=birth_years,
                 villages=villages,
                 pins=pins,
+                relative_ids=relative_ids,
             )
 
     return RecordEvidence(
@@ -539,6 +640,7 @@ def _extract_fhir_document(
         villages=frozenset(villages),
         districts=frozenset(districts),
         pins=frozenset(pins),
+        relative_global_ids=frozenset(relative_ids),
     )
 
 
@@ -605,8 +707,9 @@ def _consume_findings(
     birth_years: set[int],
     villages: set[str],
     pins: set[str],
+    relative_ids: set[str],
 ) -> None:
-    is_relative_field = sem_kind in _RELATIVE_FIELD_SEMS
+    is_relative_field = sem_kind in _RELATIVE_FIELD_SEMS or field_is_relative_owned(field, sem_kind)
     for fd in findings:
         if fd.confidence < 0.70:
             continue
@@ -614,6 +717,13 @@ def _consume_findings(
         if not raw:
             continue
         ent = fd.entity
+        if ent in _OWNED_ENTITIES:
+            owner = "relative" if is_relative_field else context_owner(text, fd.start)
+            if owner == "relative":
+                _add_relative_id(ent, raw, fd.detector, relative_ids)
+                continue
+            if owner == "ambiguous":
+                continue
         if ent is _E.AADHAAR:
             if fd.detector == "field_weak":
                 continue
@@ -649,7 +759,7 @@ def _consume_findings(
         elif ent is _E.MRN:
             if fd.detector in ("field_weak", "id_shape"):
                 continue
-            _add_mrn(raw, hospital, is_external_lab, local_ids, local_cores, raw_mrns)
+            _add_mrn(raw, hospital, is_external_lab, local_ids, local_cores, raw_mrns, field.label)
         elif ent is _E.PHONE:
             ph = normalize_phone(raw)
             if ph and not is_relative_field:
@@ -683,6 +793,28 @@ def _consume_findings(
                 pins.add(pin)
 
 
+def _add_relative_id(ent: EntityType, raw: str, detector: str, relative_ids: set[str]) -> None:
+    """Keep a relative's person-unique identifier apart (veto only, never patient evidence)."""
+    if detector == "field_weak":
+        return
+    if ent is _E.AADHAAR:
+        a = normalize_aadhaar(raw)
+        if a:
+            relative_ids.add("aadhaar|" + a)
+    elif ent is _E.ABHA_NUMBER:
+        ab = normalize_abha_number(raw)
+        if ab:
+            relative_ids.add("abha|" + ab)
+    elif ent is _E.ABHA_ADDRESS:
+        aba = normalize_abha_address(raw)
+        if aba:
+            relative_ids.add("abhaa|" + aba)
+    elif ent is _E.PAN:
+        p = normalize_pan(raw)
+        if p:
+            relative_ids.add("pan|" + p)
+
+
 def _add_mrn(
     raw: str,
     hospital: str | None,
@@ -690,14 +822,15 @@ def _add_mrn(
     local_ids: set[tuple[str, str]],
     local_cores: set[tuple[str, str]],
     raw_mrns: set[tuple[str, bool]],
+    label: str | None = None,
 ) -> None:
-    norm = normalize_mrn(raw, None if is_external_lab else hospital)
+    norm = normalize_mrn(raw, None if is_external_lab else hospital, label)
     if norm is None:
         return
-    scope, canonical, core, distinctive = norm
+    scope, canonical, typed_core, distinctive = norm
     local_ids.add((scope, canonical))
-    if len(core) >= 5:
-        local_cores.add((scope, core))
+    if len(typed_core.split(":", 1)[1]) >= 5:
+        local_cores.add((scope, typed_core))
     raw_mrns.add((canonical, distinctive))
 
 

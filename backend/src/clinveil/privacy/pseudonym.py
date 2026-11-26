@@ -3,7 +3,8 @@
 """Keyed pseudonyms and per-patient date shifts (domain-separated, versioned HMAC-SHA256).
 
 * ``pseudonym``: HMAC-SHA256(secret, ``"psn|v1|" + patient_key`` [``+ "|#" + attempt``]),
-  first 30 bits rendered as 6 Crockford base32 characters -> ``PSN-XXXXXX``. Non-reversible
+  the low 30 bits of the first 5 digest bytes (read as a 40-bit big-endian integer) rendered as
+  6 Crockford base32 characters, least-significant group first -> ``PSN-XXXXXX``. Non-reversible
   without the secret, changes completely when the secret changes (scoring attacks A6 and A7),
   and supports deterministic counter re-derivation on collision (D8).
 * ``date_shift_days``: HMAC-SHA256(secret, ``"shift|" + patient_key``) mapped to

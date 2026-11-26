@@ -94,6 +94,9 @@ class RecordEvidence:
     record: RecordKey
     hospital: str | None = None
     is_external_lab: bool = False
+    #: The hospital was reliably established (FHIR system / Organization, facility field, letterhead,
+    #: or a file name containing a hospital word), not guessed from an arbitrary file-name stem (R5).
+    hospital_reliable: bool = False
     aadhaar: frozenset[str] = field(default_factory=frozenset, repr=False)
     abha_number: frozenset[str] = field(default_factory=frozenset, repr=False)
     abha_address: frozenset[str] = field(default_factory=frozenset, repr=False)
@@ -115,6 +118,10 @@ class RecordEvidence:
     villages: frozenset[str] = field(default_factory=frozenset, repr=False)
     districts: frozenset[str] = field(default_factory=frozenset, repr=False)
     pins: frozenset[str] = field(default_factory=frozenset, repr=False)
+    #: Person-unique identifiers that belong to a RELATIVE of this record's patient
+    #: (``"aadhaar|…"``, ``"abha|…"``, ``"pan|…"``). Never identity evidence for the patient;
+    #: used only as a veto (a patient whose own ID is this record's relative ID is someone else).
+    relative_global_ids: frozenset[str] = field(default_factory=frozenset, repr=False)
     ambiguous_doc: bool = False
 
     def __repr__(self) -> str:
@@ -128,9 +135,10 @@ class RecordEvidence:
 
     @property
     def has_global_id(self) -> bool:
-        return bool(
-            self.aadhaar or self.abha_number or self.abha_address or self.pan or self.insurance_id or self.email
-        )
+        """Person-unique validated identifiers only. Insurance / policy IDs and e-mail addresses are
+        often shared by a household (ESIC / PMJAY family cards, family mailbox), so they are
+        corroborating evidence, never a global identity (Phase 3.1, R3)."""
+        return bool(self.aadhaar or self.abha_number or self.abha_address or self.pan)
 
     @property
     def has_strong_anchor(self) -> bool:

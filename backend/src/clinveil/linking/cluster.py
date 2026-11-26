@@ -33,6 +33,8 @@ _CORROB_PRIORITY = {
     "corrob_dob": 4,
     "corrob_phone": 3,
     "corrob_relative": 2,
+    "corrob_insurance": 1,
+    "corrob_email": 1,
     "corrob_village_age": 1,
     "corrob_village_birth_year": 1,
 }
@@ -43,6 +45,10 @@ def cluster_records(evidence_list: list[RecordEvidence]) -> tuple[list[ClusterPr
     stats = LinkingStats(records_total=len(evidence_list))
     # Sort input evidence deterministically by content signature (traversal-order-independent)
     ordered = sorted(evidence_list, key=lambda e: e.canonical_signature())
+    # Hospital slugs established reliably anywhere in this run (facility fields, FHIR, letterheads, …)
+    reliable_slugs = frozenset(
+        e.hospital for e in ordered if e.hospital and e.hospital_reliable and not e.is_external_lab
+    )
     active_ids: list[int] = []
     clusters: dict[int, ClusterProfile] = {}
     sigs: dict[int, tuple[str, ...]] = {}
@@ -51,7 +57,7 @@ def cluster_records(evidence_list: list[RecordEvidence]) -> tuple[list[ClusterPr
             stats.records_with_evidence += 1
         elif ev.ambiguous_doc:
             stats.outcomes_by_type[MatchOutcome.AMBIGUOUS.value] += 1
-        clusters[idx] = ClusterProfile.from_record(ev)
+        clusters[idx] = ClusterProfile.from_record(ev, reliable_slugs)
         sigs[idx] = ev.canonical_signature()
         if ev.has_any_evidence and not ev.ambiguous_doc:
             active_ids.append(idx)
@@ -132,10 +138,7 @@ def _build_global_blocks(
             blocks[("abhaa", aba)].append(cid)
         for p in c.pan:
             blocks[("pan", p)].append(cid)
-        for ins in c.insurance_id:
-            blocks[("ins", ins)].append(cid)
-        for em in c.email:
-            blocks[("email", em)].append(cid)
+        # insurance / e-mail are household-shareable: corroborators only (Stage C), never Stage A (R3)
     return blocks
 
 
@@ -224,6 +227,14 @@ def _merge_corroborated_full_names(
         for k in _name_block_keys(c):
             blocks[k].append(cid)
 
+    # A full-name block above the cap is a dense homonym group that cannot be evaluated safely:
+    # its members ABSTAIN from name-based merging, instead of being re-reached through phone or
+    # DOB blocks (Phase 3.1). Strong-ID merges (Stages A/B) are unaffected.
+    capped_ids: set[int] = set()
+    for _key, members in blocks.items():
+        if _key[0] == "full" and len({find(m) for m in members}) > MAX_NAME_BLOCK:
+            capped_ids.update(find(m) for m in members)
+
     # Collect candidate corroborated edges with priority
     cand_edges: list[tuple[int, tuple[str, ...], tuple[str, ...], int, int]] = []
     seen_pairs: set[tuple[int, int]] = set()
@@ -238,6 +249,8 @@ def _merge_corroborated_full_names(
         for i in range(len(roots)):
             for j in range(i + 1, len(roots)):
                 a, b = roots[i], roots[j]
+                if a in capped_ids or b in capped_ids:
+                    continue
                 pair = (a, b) if a < b else (b, a)
                 if pair in seen_pairs:
                     continue

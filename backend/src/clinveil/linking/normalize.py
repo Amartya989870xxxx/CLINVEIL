@@ -496,8 +496,54 @@ def normalize_hospital(raw: str) -> tuple[str | None, bool]:
     return joined, is_lab
 
 
-def normalize_mrn(raw: str, hospital: str | None) -> tuple[str, str, str, bool] | None:
-    """Return ``(scope, canonical_mrn, digit_core, has_distinctive_prefix)`` or None.
+#: Hospital-TYPE abbreviations used as MRN prefixes by many unrelated hospitals (never issuer-unique).
+_HOSPITAL_TYPE_PREFIXES = frozenset(
+    "uh gh dh ch mh sh ah rh th bh phc chc sdh mch gmc gmch mc hsp hosp med medi".split()
+)
+
+#: Identifier TYPE words (Phase 3.1, R6): an admission or visit number is never a patient MRN,
+#: even when the digits coincide (``IPD/26/0045123`` vs ``UHID-0045123``).
+_ADMISSION_ID_WORDS = frozenset({"ipd", "ip", "ipno", "adm", "admission", "admit", "inpatient"})
+_VISIT_ID_WORDS = frozenset({"opd", "op", "opno", "visit", "vis", "enc", "encounter", "token", "bill", "receipt"})
+#: Types that identify the PATIENT at the issuing hospital (vs one admission / visit).
+AUTHORITATIVE_ID_TYPES_PREFIX = ("patient", "pfx_")
+
+
+def id_type(raw: str, label: str | None = None) -> str:
+    """Identifier type from the value's own alphabetic prefix, else from its field label.
+
+    ``admission`` (IPD/ADM), ``visit`` (OPD/visit/token), ``patient`` (UHID/MRN/CR/Reg and bare
+    numbers in such fields), or ``pfx_<prefix>`` for a hospital-specific prefix (``KSR-26-000111``).
+    """
+    words = [w.lower() for w in re.findall(r"[A-Za-z]+", raw)]
+    for w in words:
+        if w in _ADMISSION_ID_WORDS:
+            return "admission"
+        if w in _VISIT_ID_WORDS:
+            return "visit"
+    for w in words:
+        if w in _GENERIC_MRN_PREFIXES:
+            return "patient"
+    if words and len(words[0]) >= 2:
+        return "pfx_" + words[0]
+    lt = {t.lower() for t in re.findall(r"[A-Za-z]+", label or "")}
+    if lt & _ADMISSION_ID_WORDS:
+        return "admission"
+    if lt & _VISIT_ID_WORDS:
+        return "visit"
+    return "patient"
+
+
+def is_authoritative_core(core_key: str) -> bool:
+    """A typed digit core (``"<type>:<digits>"``) that identifies a patient, not an admission/visit."""
+    return core_key.startswith(AUTHORITATIVE_ID_TYPES_PREFIX)
+
+
+def normalize_mrn(raw: str, hospital: str | None, label: str | None = None) -> tuple[str, str, str, bool] | None:
+    """Return ``(scope, canonical_mrn, typed_digit_core, has_distinctive_prefix)`` or None.
+
+    ``typed_digit_core`` is ``"<id type>:<digit core>"`` so digit cores only ever match within
+    one identifier type (Phase 3.1, R6).
 
     * Hospital-prefixed MRNs (e.g. ``SUN/26/100101``, ``LOT-008821``) carry a distinctive
       issuing-system prefix (``has_distinctive_prefix=True``).
@@ -515,14 +561,22 @@ def normalize_mrn(raw: str, hospital: str | None) -> tuple[str, str, str, bool] 
     canonical = "-".join(p.upper() for p in parts)
     core = mrn_digit_core(s)
     alpha_prefix = parts[0].lower() if parts[0].isalpha() else ""
-    distinctive = bool(alpha_prefix and len(alpha_prefix) >= 2 and alpha_prefix not in _GENERIC_MRN_PREFIXES)
+    # A prefix identifies its issuer only if it is long enough and not a hospital-TYPE abbreviation
+    # ("UH", "GH", "DH", "CHC" are shared by many hospitals, R5).
+    distinctive = bool(
+        alpha_prefix
+        and len(alpha_prefix) >= 3
+        and alpha_prefix not in _GENERIC_MRN_PREFIXES
+        and alpha_prefix not in _HOSPITAL_TYPE_PREFIXES
+    )
     if hospital:
         scope = f"hosp:{hospital}"
     elif distinctive:
         scope = f"pfx:{alpha_prefix}"
     else:
         scope = "unscoped"
-    return scope, canonical, core, distinctive
+    typed_core = f"{id_type(s, label)}:{core}" if core else ""
+    return scope, canonical, typed_core, distinctive
 
 
 # --------------------------------------------------------------------------- dates, ages, gender, geography

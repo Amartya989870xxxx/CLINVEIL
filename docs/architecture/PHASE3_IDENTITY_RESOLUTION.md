@@ -2,6 +2,18 @@
 
 Status: Design and implementation specification for branch `phase-3-identity-resolution` (based on `main` at `9205b5a`).
 
+> **Phase 3.1 update.** An independent audit of `32fe8fc` reproduced six false-merge classes. The
+> rules below are the corrected ones; the cases, root causes and measurements are in
+> [`docs/evaluation/PHASE3_REMEDIATION.md`](../evaluation/PHASE3_REMEDIATION.md). In short:
+> - identifiers have an **owner** (patient, relative or ambiguous);
+> - insurance IDs and e-mail are **corroborators**, not global IDs;
+> - under a global ID the whole names must be compatible;
+> - the cross-hospital guard runs first and uses **reliably** established hospitals;
+> - digit cores are **typed**;
+> - distinct same-issuer MRNs block weak merges, except documented re-registration;
+> - weak merges use **complete-linkage** vetoes, and capped name blocks abstain;
+> - the self-check validates pseudonyms **per record**.
+
 Authoritative external contract: `organiser-toolkit/docs/SPEC.md`, `SCORING.md`, `DATASET.md`, `ATTACKS.md`.
 
 ---
@@ -46,9 +58,9 @@ All in-memory `RecordEvidence`, blocking tables, clusters, and canonical cluster
 
 | Tier | Evidence Types | Normalization & Guards |
 |---|---|---|
-| **Tier 1: Validated Global IDs** | Verhoeff-valid 12-digit Aadhaar, 14-digit ABHA number, ABHA address (`@abdm`/`@sbx`/`@ndhm`), validated PAN, structured/validated Insurance/PMJAY/CGHS/ESIC ID, patient email | Any-script Unicode digits folded to ASCII. **Masked Aadhaar (`XXXX XXXX 1234`) is NEVER used as a unique identifier.** Non-Verhoeff 12-digit numbers are NEVER used as Aadhaar. Relative/doctor/org values are excluded. |
-| **Tier 2: Hospital-Scoped Local IDs** | MRN, UHID, IPD/admission no., hospital registration no. | Normalized to `(hospital_scope, canonical_mrn)` plus `(hospital_scope, digit_core)` for cores >= 5 digits. Hospital scope is derived from facility/org fields, FHIR `Identifier.system` host, document letterhead, or filename stem. Generic MRNs (`MRN-12345`, `UHID-099102`, bare numbers) **never** link across two different known hospitals. External labs/pathology reports are tagged as external sources so a referring hospital's MRN can still match when patient names are compatible. |
-| **Tier 3: Supporting Evidence** | Patient name, relative name, 10-digit patient phone, DOB / birth year, age, gender, village / locality, district, PIN | **Supporting signals never trigger a merge alone.** Split name fields (`FirstName` + `LastName`, FHIR `given` + `family`) are reassembled per record. Doctor, staff, relative, and clinical values never enter `patient_names`. Dates respect explicit `MM/DD/YYYY` vs `DD/MM/YYYY` header hints and ISO dates; unlabelled ambiguous slash dates record both interpretations to avoid false vetoes while preserving hard conflicts. |
+| **Tier 1: Validated Global IDs** (person-unique) | Verhoeff-valid 12-digit Aadhaar, 14-digit ABHA number, ABHA address (`@abdm`/`@sbx`/`@ndhm`), validated PAN | Any-script Unicode digits folded to ASCII. **Masked Aadhaar (`XXXX XXXX 1234`) is NEVER used as a unique identifier.** Non-Verhoeff 12-digit numbers are NEVER used as Aadhaar. Doctor/org values are excluded. **Ownership (3.1):** an ID from a relative-labelled field (`Father Aadhaar`, `पिता आधार`, `Guardian UID`), a relative JSON container (`guardian: {aadhaar}`), FHIR `RelatedPerson.identifier`, or text whose own segment has a kinship cue (`Husband's Aadhaar`, `पति का आधार`) is the relative's: it is kept apart in `relative_global_ids` (veto only). A relation marker in that segment (`W/o <Name> Aadhaar …`) makes the owner ambiguous and the value unused. |
+| **Tier 2: Hospital-Scoped Local IDs** | MRN, UHID, IPD/admission no., hospital registration no. | Normalized to `(hospital_scope, canonical_mrn)` plus a **typed** `(hospital_scope, "<type>:<digit_core>")` for cores >= 5 digits; types are `patient`, `admission`, `visit`, `pfx_<prefix>`, and cores only match within one type (3.1). Hospital scope is derived from facility/org fields, FHIR `Identifier.system` host, document letterhead, or filename stem; only the first three, a file name containing a hospital word, or a stem slug corroborated by one of those elsewhere in the run are **reliable** (3.1). Generic MRNs (`MRN-12345`, `UHID-099102`, bare numbers) **never** link across two different known hospitals. External labs/pathology reports are tagged as external sources so a referring hospital's MRN can still match when patient names are compatible. |
+| **Tier 3: Supporting Evidence** | Patient name, relative name, 10-digit patient phone, DOB / birth year, age, gender, village / locality, district, PIN, **insurance / PMJAY / ESIC / CGHS ID and e-mail** (household-shareable, so corroborators only since 3.1) | **Supporting signals never trigger a merge alone.** Split name fields (`FirstName` + `LastName`, FHIR `given` + `family`) are reassembled per record. Doctor, staff, relative, and clinical values never enter `patient_names`. Dates respect explicit `MM/DD/YYYY` vs `DD/MM/YYYY` header hints and ISO dates; unlabelled ambiguous slash dates record both interpretations to avoid false vetoes while preserving hard conflicts. |
 
 ### Cross-Script Name Normalization (`linking/normalize.py`)
 - Uses `detection/translit.name_key_strict` (keeping vowel qualities so `Kiran != Karan`, `Sita != Satya`, `Alok != Alka`), extended with:
@@ -71,18 +83,22 @@ Explicit decision outcomes (`MatchOutcome`):
 
 ### Hard Conflict Vetoes (Always Block Merge)
 1. **Conflicting global IDs:** disjoint Verhoeff-valid Aadhaar, disjoint 14-digit ABHA, or disjoint PAN.
+   **Relative-ID owner (3.1):** one side's own Aadhaar/ABHA/PAN equals the other side's *relative* ID.
 2. **Incompatible demographics:** conflicting explicit gender (`M` vs `F`), incompatible unambiguous DOB, birth year difference > 1, or age difference > 3.
-3. **Incompatible full patient names:** two full (>=2 token) names that disagree on identifying tokens (blocks family members sharing a phone/address and twins sharing surname/DOB/relative/address). Even when a global ID matches, completely disjoint full names combined with demographic contradiction veto the merge.
+3. **Incompatible full patient names:** two full (>=2 token) names that disagree on identifying tokens (blocks family members sharing a phone/address and twins sharing surname/DOB/relative/address). **Under a global ID match (3.1)** the names must be phonetically compatible as whole names; a shared surname alone no longer passes, and when both sides have full names only full names decide.
 4. **Homonym vetoes (for non-ID matches):** disjoint relative names (`S/o X` vs `S/o Y`), disjoint villages, or disjoint districts block name-based merges.
-5. **Cross-hospital local ID isolation:** identical generic MRNs from two different known hospitals provide zero positive match evidence.
+5. **Cross-hospital local ID isolation:** an identical MRN string (generic **or prefixed**) from two different **reliably known** hospitals provides zero positive match evidence; the guard runs before any MRN rule (3.1). Two-letter and hospital-type prefixes (UH, GH, DH, CHC, PHC…) are not issuer-distinctive.
+6. **Distinct authoritative MRNs, same issuer (3.1):** different patient MRNs (admissions/visits excluded) from the same issuer block non-global merges, except the re-registration documented in `DATASET.md`: full-name match + exact DOB + at least one more independent corroborator.
+7. **Complete linkage for weak merges (3.1):** a merge resting on names and corroborators requires EVERY member pair to agree (age span ≤ 3, birth-year span ≤ 1, all DOBs compatible, one gender), so a cluster's tolerance cannot widen as it grows.
 
 ### Confident Match Rules (Only When Zero Conflicts Exist)
-1. **Strong Global ID (`STRONG_GLOBAL`):** shared validated Aadhaar, ABHA number, ABHA address, PAN, insurance ID, or patient email (subject to block-size cap and conflict veto).
-2. **Scoped Local ID (`STRONG_SCOPED_ID`):** shared `(hospital_scope, mrn)` or `(hospital_scope, digit_core >= 5)`, or shared distinctive-prefix MRN, or external-lab MRN with compatible patient name (subject to conflict veto and never across two different known hospitals).
+1. **Strong Global ID (`STRONG_GLOBAL`):** shared patient-owned validated Aadhaar, ABHA number, ABHA address or PAN (subject to block-size cap and conflict veto). Insurance IDs and e-mail no longer qualify (3.1).
+2. **Scoped Local ID (`STRONG_SCOPED_ID`):** shared `(hospital_scope, mrn)` or same-type `(hospital_scope, typed digit_core >= 5)`, or shared distinctive-prefix MRN, or external-lab MRN with compatible patient name (subject to conflict veto and never across two different reliably known hospitals).
 3. **Corroborated Full Name (`CORROBORATED_NAME`):** `EXACT_FULL` / `VARIANT_FULL` / `ABBREVIATED_FULL` plus at least one of:
    - exact `dob`;
    - shared 10-digit patient `phone`;
    - compatible `relative_name`;
+   - shared insurance / policy ID or e-mail (3.1, household-shareable corroborators);
    - matching normalized `village` AND `age` within ±1 year (or matching birth year ±1).
    *(Full name + village alone without age/DOB/relative/phone is insufficient and remains unlinked.)*
 4. **Unique Fragmented Attachment (`FRAGMENTED_UNIQUE`):** `FIRST_ONLY_MATCH` (non-generic given token) plus `relative_name`, `phone`, `dob`, or `village + age±1`, **only** when it matches **exactly one** existing cluster with zero conflicts and zero competing matches.
@@ -92,10 +108,10 @@ Explicit decision outcomes (`MatchOutcome`):
 ## 5. Blocking Strategy and Performance Bounds
 
 To prevent O(N²) all-pairs comparisons:
-- **Stage A blocks:** `aadhaar`, `abha_number`, `abha_address`, `pan`, `insurance_id`, `email`.
+- **Stage A blocks:** `aadhaar`, `abha_number`, `abha_address`, `pan` (insurance and e-mail removed in 3.1).
 - **Stage B blocks:** `(hospital_scope, canonical_mrn)`, `(hospital_scope, digit_core)`, and external/prefixed `canonical_mrn`.
 - **Stage C blocks:** sorted strict full-name pair keys, `(surname_strict, first_initial)`, `phone`, `dob`, `(first_strict, relative_strict)`, `(first_strict, village_strict)`.
-- **Pathological block cap (`MAX_BLOCK_SIZE = 128` for ID/phone/DOB blocks, `64` for name blocks):** blocks exceeding the cap are skipped rather than compared pairwise, and counted in `blocks_capped_ambiguous`. Records that cannot be safely linked within the cap remain unlinked (`null`).
+- **Pathological block cap (`MAX_BLOCK_SIZE = 128` for ID/phone/DOB blocks, `64` for name blocks):** blocks exceeding the cap are skipped rather than compared pairwise, and counted in `blocks_capped_ambiguous`. Records that cannot be safely linked within the cap remain unlinked (`null`). **Since 3.1** the members of a capped full-name block abstain from all name-based merging (they are not re-reached through phone or DOB blocks).
 
 ---
 
@@ -112,10 +128,10 @@ Every cluster with `>= 2` members, or a singleton carrying a strong patient anch
 
 ## 7. Cryptographic Pseudonym Construction
 
-- **Canonical cluster key:** derived strictly from sorted normalized evidence in fixed precedence (`v1|aadhaar|...` > `v1|abha|...` > `v1|abhaa|...` > `v1|pan|...` > `v1|ins|...` > `v1|mrn|...` > `v1|demo|...`). Traversal-order-independent.
+- **Canonical cluster key:** derived strictly from sorted normalized evidence in fixed precedence (`aadhaar|...` > `abha|...` > `abhaa|...` > `pan|...` > `mrn|...` > `demo|...`; insurance and e-mail removed in 3.1 because they can be shared by a household). Traversal-order-independent.
 - **HMAC construction (`Pseudonymizer.pseudonym`):**
   - `HMAC-SHA256(RAKSHA_SECRET, "psn|v1|" + canonical_cluster_key)` (or `"psn|v1|" + canonical_cluster_key + "|#" + attempt` on collision).
-  - First 30 bits encoded as 6 Crockford base32 characters: `PSN-XXXXXX`.
+  - The first 5 digest bytes are read as a 40-bit big-endian integer and its **low 30 bits** are encoded as 6 Crockford base32 characters (least-significant 5-bit group first): `PSN-XXXXXX`. (Earlier text said "first 30 bits", which was inaccurate; the code is unchanged.) The format matches the official example `PSN-7Q2K9D`, which SPEC shows only as an example. 30 bits give ≈1.07 × 10⁹ codes; collisions inside one release are resolved deterministically (below).
 - **Collision protection (D8):** Clusters are ordered canonically before assignment; if two distinct clusters produce the same 30-bit code, the second deterministically re-derives with `attempt = 1, 2, ...` so distinct clusters never share a pseudonym.
 - **Security properties:**
   - Keyed by `RAKSHA_SECRET` only (no fallback secret, no machine fingerprint).

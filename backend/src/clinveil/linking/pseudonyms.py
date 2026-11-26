@@ -25,10 +25,7 @@ def canonical_cluster_key(cluster: ClusterProfile) -> str:
         return "abhaa|" + min(cluster.abha_address)
     if cluster.pan:
         return "pan|" + min(cluster.pan)
-    if cluster.insurance_id:
-        return "ins|" + min(cluster.insurance_id)
-    if cluster.email:
-        return "email|" + min(cluster.email)
+    # insurance / e-mail are household-shareable (R3): never canonical identity material
     if cluster.local_ids:
         return "mrn|" + min(f"{s}/{m}" for s, m in cluster.local_ids)
     # Demographic fallback for multi-record corroborated clusters without strong IDs
