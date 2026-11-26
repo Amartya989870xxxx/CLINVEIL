@@ -20,7 +20,7 @@ import re
 from collections.abc import Iterator
 
 from clinveil.detection.identifiers import Hit
-from clinveil.detection.lexicon import UP_DISTRICTS
+from clinveil.detection.lexicon import KNOWN_PLACES
 from clinveil.detection.text import DEVANAGARI_DIGITS, normalize_phrase
 from clinveil.models.findings import EntityType
 
@@ -51,9 +51,14 @@ KEEP_RE = re.compile(
 CO_RE = re.compile(r"(?i)^(?:C/O|S/O|D/O|W/O|care\s+of)\b")
 PIN_TAIL_RE = re.compile(r"(?:^|[\s\-–,:])(?P<pin>[1-9]\d{5})\s*$")
 PIN_LABEL_RE = re.compile(r"(?i)(?:\bPIN(?:\s*Code)?|\bPincode|पिन(?:\s*कोड)?)\s*[:\-]?\s*(?P<pin>[1-9]\d{5})\b")
+#: "fixator pin: 210045", "K-wire pin 2" are orthopaedic hardware, not postal codes.
+_HARDWARE_BEFORE_PIN = re.compile(
+    r"(?i)(?:fixator|fixation|k[\s-]?wire|steinmann|schanz|traction|skeletal|denham|safety|ortho\w*|screw|"
+    r"nail|external|tibial|calcaneal)\s*$"
+)
 ADDRESS_LABEL_RE = re.compile(
     r"(?im)(?:\b(?:Address|Addr|Residence|Res\.)(?:\s*\([^)\n]{0,30}\))?\s*[:\-]|"
-    r"पता(?:\s*\([^)\n]{0,30}\))?\s*[:\-])[ \t]*(?P<a>[^\n]+)"
+    r"पता(?:\s*\([^)\n]{0,30}\))?\s*[:\-])[ \t]*(?P<a>[^\n<]+)"  # never runs into markup
 )
 INLINE_VILLAGE_RE = re.compile(
     r"(?i)(?:\bVill(?:age)?\.|\bVillage\s*:|\bGram\s*:|\bGaon\s*:|ग्राम\s*:?|गाँव\s*:?|गांव\s*:?)"
@@ -76,7 +81,7 @@ def _segments(text: str, start: int, end: int) -> Iterator[tuple[int, int]]:
 
 def _is_known_place(seg: str) -> bool:
     keys = normalize_phrase(seg)
-    return bool(keys) and (" ".join(keys) in UP_DISTRICTS or all(k in UP_DISTRICTS for k in keys))
+    return bool(keys) and (" ".join(keys) in KNOWN_PLACES or all(k in KNOWN_PLACES for k in keys))
 
 
 def address_components(text: str, start: int = 0, end: int | None = None, *, base_conf: float = 0.85) -> list[Hit]:
@@ -130,5 +135,7 @@ def detect_addresses(text: str) -> list[Hit]:
             hits.append(Hit(s, s + len(v), V, 0.85, "village_label"))
     scan = text.translate(DEVANAGARI_DIGITS)
     for m in PIN_LABEL_RE.finditer(scan):
+        if _HARDWARE_BEFORE_PIN.search(scan[max(0, m.start() - 24) : m.start()]):
+            continue
         hits.append(Hit(m.start("pin"), m.end("pin"), PIN, 0.9, "pin_label"))
     return hits

@@ -108,9 +108,11 @@ class Base64Segment:
     encoding: str  # text encoding of the decoded bytes (needed to re-encode)
     padded: bool  # whether the original carried ``=`` padding
     declared_type: str | None  # e.g. Attachment.contentType, when declared
+    withheld: bool = False  # binary payload: removed from the release (no child field)
+    urlsafe: bool = False  # URL-safe alphabet: re-encoded with ``-``/``_``
 
     def __repr__(self) -> str:
-        return f"Base64Segment(span={self.start}:{self.end}, declared={self.declared_type})"
+        return f"Base64Segment(span={self.start}:{self.end}, declared={self.declared_type}, withheld={self.withheld})"
 
 
 @dataclass(frozen=True, slots=True)

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from clinveil.config.policy import Policy
+from clinveil.detection import caches
 from clinveil.detection.engine import DetectionEngine, DetectionStats
 from clinveil.detection.value_index import SensitiveValueIndex
 from clinveil.export.release import (
@@ -52,6 +53,8 @@ from clinveil.security.secrets import ReleaseSecret
 from clinveil.utils.resources import peak_rss_mb
 from clinveil.validation.contract import check_release
 
+_EMPTY_SHA = hashlib.sha256(b"").hexdigest()
+
 
 @dataclass(frozen=True)
 class RunSummary:
@@ -67,6 +70,13 @@ class RunSummary:
 
 
 def run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Policy) -> RunSummary:
+    try:
+        return _run(input_dir, output_dir, secret, policy)
+    finally:
+        caches.clear_all()  # memo caches hold input fragments: they never outlive the run
+
+
+def _run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Policy) -> RunSummary:
     t0 = time.monotonic()
     sanitized_root = output_dir / "sanitized"
     sanitized_root.mkdir(parents=True, exist_ok=True)
@@ -88,8 +98,14 @@ def run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Policy
     for f in discovered:
         entry = FileEntry(input_sha256="")
         try:
+            if f.broken:
+                entry.input_sha256 = _EMPTY_SHA  # nothing exists to read: the SHA-256 of zero bytes
+                raise QuarantineError("broken_symlink")
             if f.escapes_root:
-                entry.input_sha256 = sha256_file(f.path)  # hashed for the report, never parsed
+                # Never parsed, never exported. The official contract identifies every input by the
+                # SHA-256 of the bytes behind its path (validate_output follows the link), so a regular,
+                # size-capped target is stream-hashed; anything larger is not read at all.
+                entry.input_sha256 = sha256_file(f.path) if 0 <= f.size <= policy.max_file_bytes else _EMPTY_SHA
                 raise QuarantineError("symlink_outside_input")
             if f.size > policy.max_file_bytes:
                 entry.input_sha256 = sha256_file(f.path)
@@ -139,7 +155,7 @@ def _seed_index(input_dir: Path, policy: Policy, limits: IngestLimits) -> Sensit
     index = SensitiveValueIndex()
     seeder = DetectionEngine(None)
     for f in discover(input_dir):
-        if f.escapes_root or f.size > policy.max_file_bytes:
+        if f.broken or f.escapes_root or f.size > policy.max_file_bytes:
             continue
         try:
             raw = f.path.read_bytes()
@@ -162,6 +178,7 @@ def _write_detection_summary(output_dir: Path, det: DetectionStats, stats: RunSt
         "redactions_by_entity": dict(sorted(stats.entities.items())),
         "generalized": stats.generalized,
         "payloads_rewritten": stats.payloads_rewritten,
+        "attachments_withheld": stats.attachments_withheld,
         "files_renamed": renamed,
     }
     logs = output_dir / "logs"

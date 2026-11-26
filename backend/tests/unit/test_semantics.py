@@ -132,3 +132,11 @@ def test_unknown_labels_stay_unknown():
 def test_semantic_evidence_never_contains_values():
     s = classify_label("Patient Name")
     assert s.evidence.isascii() and " " not in s.evidence
+
+
+@pytest.mark.parametrize("label", ["address_note", "Address Details", "address_line", "village_remarks"])
+def test_location_label_with_free_text_qualifier_is_still_location(label):
+    """Phase 2.1 regression: purity must not demote "address_note" to free text."""
+    from clinveil.detection.semantics import STRUCTURED_PII
+
+    assert classify_label(label).sem in STRUCTURED_PII

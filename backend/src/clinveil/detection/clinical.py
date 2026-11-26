@@ -31,13 +31,16 @@ class KeepSpan:
 
 
 _CAP = r"[A-Z][A-Za-z'.\-]*"
-_NAMEPART = r"(?:[A-Z][a-z'\-]+|[A-Z]{2,}|[A-Z]\.)"
+#: One part of a clinician's name: "Kelvan", "IYER", "R.", "Md.", "Mohd.", "Shri" (abbreviations keep their period).
+_NAMEPART = r"(?:[A-Z][a-z'\-]+\.?|[A-Z]{2,}\.?|[A-Z]\.)"
 _DEVA_WORD = r"[ऀ-ॣॱ-ॿ‌‍]+"
 
 PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # clinicians: "Dr. Ramesh", "Dr Kelvar Dunmore (MD Medicine)", "डॉ. रमेश"
     ("doctor", re.compile(r"\b(?:Dr|DR|Doctor|Prof)\.?\s*" + _NAMEPART + r"(?:\s+" + _NAMEPART + r"){0,3}")),
-    ("doctor", re.compile(r"(?:डॉ|डा)\.?\s*" + _DEVA_WORD + r"(?:\s+" + _DEVA_WORD + r")?")),
+    # all-lower-case notes ("dr. kelvan"): exactly one name word, so the span never runs into the sentence
+    ("doctor", re.compile(r"\b(?:dr|doctor)\.?\s*[a-z][a-z'\-]+\b")),
+    ("doctor", re.compile(r"(?:डॉक्टर|चिकित्सक|डॉ|डा)\.?\s*[:：\-]?\s*" + _DEVA_WORD + r"(?:\s+" + _DEVA_WORD + r")?")),
     # organisations: "... Hospital", "... Pathology", "*Lifeline Pathology*", "Arogya Seva Sadan"
     (
         "organization",

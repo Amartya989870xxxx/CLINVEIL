@@ -81,6 +81,21 @@ PHONE_RE = re.compile(
 AADHAAR_RE = re.compile(_B + r"[2-9]\d{3}(?P<s1>[ \-]?)\d{4}(?P=s1)\d{4}" + _E)
 AADHAAR_MASKED_RE = re.compile(r"(?i)" + _B + r"(?:[x*•]{4}[ \-]?[x*•]{4}[ \-]?\d{4}|[x*•]{8}\d{4})" + _E)
 ABHA_NUMBER_RE = re.compile(_B + r"\d{2}[ \-]\d{4}[ \-]\d{4}[ \-]\d{4}" + _E)
+#: A labelled ABHA number may also be written as 14 contiguous digits.
+ABHA_LABEL_RE = re.compile(
+    r"(?i)(?:\bABHA(?:\s*(?:No|Number|ID|#))?|\bHealth\s*ID(?:\s*(?:No|Number))?|\bPHR\s*ID|आभा)\.?"
+    r"\s*[:#.\-]?\s*(?P<id>\d{14}|\d{2}[ \-]?\d{4}[ \-]?\d{4}[ \-]?\d{4})" + _E
+)
+#: Landlines with an STD code: ``0522-2234567``, ``(0522) 2234567``, ``011-23456789``.
+LANDLINE_RE = re.compile(_B + r"(?:\(0\d{2,4}\)\s?|0\d{2,4}[ \-])\d{6,8}" + _E)
+_LANDLINE_LABEL_RE = re.compile(
+    r"(?i)\b(?:landline|ph(?:one)?|tel(?:ephone)?|contact|std|office|resi(?:dence)?)\b\.?\s*[:\-#]?\s*$"
+)
+_AADHAAR_LABEL_RE = re.compile(r"(?i)(?:aadh?aa?r|adhaa?r|\buid\b|uidai|आधार)[^\n]{0,24}$")
+_NON_PII_NUMBER_RE = re.compile(
+    r"(?i)\b(?:serial|s\.?\s*no|batch|lot|sample|specimen|invoice|bill|order|txn|transaction|barcode|accession|"
+    r"ref(?:erence)?|receipt|ticket|token|claim|imei|device|model)\b[^\n]{0,12}$"
+)
 ABHA_ADDRESS_RE = re.compile(r"(?i)(?<![\w.])[a-z0-9][a-z0-9._]{2,}@(?:abdm|sbx|ndhm)(?![\w.])")
 EMAIL_RE = re.compile(r"(?i)(?<![\w.+-])[a-z0-9][a-z0-9._%+-]*@[a-z0-9-]+(?:\.[a-z0-9-]+)+(?![\w-])")
 PAN_RE = re.compile(r"(?<![A-Za-z0-9])[A-Z]{3}[ABCFGHLJPTK][A-Z]\d{4}[A-Z](?![A-Za-z0-9])")
@@ -106,6 +121,7 @@ PHONE_LABEL_RE = re.compile(
 
 
 def _scan(text: str) -> str:
+    """Length-preserving: any-script digits -> ASCII (offsets stay valid on ``text``)."""
     return text.translate(DEVANAGARI_DIGITS)
 
 
@@ -123,12 +139,23 @@ def find_identifiers(text: str) -> Iterator[Hit]:
             yield Hit(m.start(), m.end(), EntityType.EMAIL, 0.95, "email")
     for m in ABHA_NUMBER_RE.finditer(s):
         yield Hit(m.start(), m.end(), EntityType.ABHA_NUMBER, 0.95, "abha_number")
+    for m in ABHA_LABEL_RE.finditer(s):
+        yield Hit(m.start("id"), m.end("id"), EntityType.ABHA_NUMBER, 0.96, "abha_number")
     for m in AADHAAR_MASKED_RE.finditer(s):
         yield Hit(m.start(), m.end(), EntityType.AADHAAR_MASKED, 0.95, "aadhaar_masked")
     for m in AADHAAR_RE.finditer(s):
         d = _digits(m.group())
         grouped = bool(m.group("s1"))
-        conf = 0.97 if verhoeff_valid(d) else (0.92 if grouped else 0.8)
+        before = s[max(0, m.start() - 40) : m.start()]
+        labelled = bool(_AADHAAR_LABEL_RE.search(before))
+        if verhoeff_valid(d):
+            if not labelled and not grouped and _NON_PII_NUMBER_RE.search(before):
+                continue  # "Serial 2938…": a checksum-valid run that is explicitly another number
+            conf = 0.97
+        elif grouped or labelled:
+            conf = 0.92
+        else:
+            continue  # 12 contiguous digits, no checksum, no label: not evidence of an Aadhaar
         yield Hit(m.start(), m.end(), EntityType.AADHAAR, conf, "aadhaar")
     for m in PHONE_RE.finditer(s):
         d = _digits(m.group())
@@ -136,6 +163,9 @@ def find_identifiers(text: str) -> Iterator[Hit]:
             continue  # a checksum-valid 12-digit run starting 91 is more likely an Aadhaar
         conf = 0.95 if PHONE_LABEL_RE.search(s[max(0, m.start() - 16) : m.start()]) else 0.9
         yield Hit(m.start(), m.end(), EntityType.PHONE, conf, "phone")
+    for m in LANDLINE_RE.finditer(s):
+        labelled = _LANDLINE_LABEL_RE.search(s[max(0, m.start() - 16) : m.start()])
+        yield Hit(m.start(), m.end(), EntityType.PHONE, 0.92 if labelled else 0.75, "landline")
     for m in PAN_RE.finditer(s):
         yield Hit(m.start(), m.end(), EntityType.PAN, 0.95, "pan")
     for m in INSURANCE_RE.finditer(s):

@@ -26,7 +26,7 @@ Assumption from the problem statement: *"Assume your server will be breached one
 
 | Surface | Threat | Mitigation | Status |
 |---|---|---|---|
-| Input traversal | symlink to `/etc` or `~/.ssh` exported as a "sanitised" file | escaping symlinks quarantined, never parsed; symlinked dirs not traversed | ✅ P0 |
+| Input traversal | symlink to `/etc` or `~/.ssh` exported as a "sanitised" file | escaping symlinks quarantined, never parsed; target hashed only if a regular file within the size cap (2.1); broken symlinks reported as `broken_symlink` instead of silently dropped (2.1); symlinked dirs not traversed | ✅ P0 / 2.1 |
 | Input size | memory exhaustion | `max_file_bytes` cap, streamed hashing | ✅ P0 |
 | Deep / huge JSON | `RecursionError`, memory blow-up | linear pre-parse depth scan (limit 64), size (64 MiB) and node (2M) limits, no raised recursion limit; quarantine with stable codes | ✅ P1 |
 | Extension spoofing | JSON behind `.csv` mangled as CSV | content-based detection: signatures, JSON-first, markup, delimiter sniffing | ✅ P1 |
@@ -38,10 +38,14 @@ Assumption from the problem statement: *"Assume your server will be breached one
 | Secret | written or logged; weak or missing key | env-only, unprintable, unpicklable; fail closed when missing; test scans every output byte for it | ✅ P0 |
 | Temp files | PII left in `TMPDIR` | none written; if ever needed, AES-GCM with an ephemeral key, deleted in `finally` | ✅ P0 (by absence) |
 | Filenames | `Discharge_Summary_<Name>_<UHID>.txt` | PII components renamed (`DS_NAME_MRN.txt`), collision-safe, mapping declared by input SHA-256 | ✅ P2 |
-| Base64 payloads | PII exported inside raw attachments | declared and embedded payloads decoded, cleaned, re-encoded; binary or invalid payloads quarantine the file; 16 MiB decoded cap | ✅ P1 (baseline rules) |
+| Base64 payloads | PII exported inside raw attachments | declared and embedded payloads decoded, cleaned, re-encoded (standard and URL-safe alphabets; runs of 12+ chars when they hide an identifier-length number, 2.1); binary payloads *withheld* (JSON member removed, `[ATTACHMENT-WITHHELD]` in text) instead of quarantining the file (2.1); invalid declared payloads quarantine; 16 MiB decoded cap | ✅ P1 / 2.1 |
+| Encoded text | PII hidden from patterns by HTML entities, XHTML markup, %-escapes, non-Devanagari digits, homoglyph digits | decoded views with an exact offset map back (markup preserved); every Unicode decimal digit folded (2.1). Not decoded: hex and `\uXXXX` in plain text | ✅ 2.1 (partial) |
+| Preserved fields | PII inside a "clinical", "doctor" or "relation" field skipped by detection | no semantic disables detection any more: preserved fields are guarded (validated IDs, cue-based names, confirmed values still removed; 2.1) | ✅ 2.1 |
+| FHIR ids | hospital IDs embedded in `id` / `fullUrl` / `reference` | identifying id segments rewritten to `rid-<entry>` together with every reference (2.1) | ✅ 2.1 |
 | Hidden channels | keys, headers, metadata, FHIR narrative, filenames | channel-aware detection, loose-channel rules, cross-channel propagation, path renaming declared by hash | ✅ P2 |
-| Value index | a run-wide map of confirmed PII is itself a breach target | memory only; refuses pickling; `repr` shows sizes only; deleted at the end of the run; never logged | ✅ P2 |
-| Findings / stats | detection metadata leaks values | `Finding` stores offsets only (no text); `logs/detection_summary.json` and `report.json` hold counts only (tested) | ✅ P2 |
+| Value index | a run-wide map of confirmed PII is itself a breach target | memory only; refuses pickling; `repr` shows sizes only; deleted at the end of the run; never logged; complaint words, care-of names, doctor-protected names and non-person-shaped values never seeded (2.1) | ✅ P2 / 2.1 |
+| Memo caches | `lru_cache`s of normalisation, transliteration and label classification keep input fragments (names) in process memory after a run | central registry, cleared in a `finally` when every run ends (2.1, tested) | ✅ 2.1 |
+| Findings / stats | detection metadata leaks values; counts overstate work | `Finding` stores offsets only (no text); `logs/detection_summary.json` and `report.json` hold counts only (tested); only transformations that changed the text are counted (2.1) | ✅ P2 / 2.1 |
 | Pseudonym inversion (A6) | unkeyed hash of the UHID | HMAC-SHA256 keyed with the release secret; no identifier material in the code | ✅ helper; ⏳ applied P3 |
 | Cross-release (A7) | stable pseudonyms or shifts across releases | every derivation keyed by the secret | ⏳ applied P3/P4 |
 | Global shift recovery (A5) | one shift for everyone | per-patient keyed shift | ⏳ applied P4 |
@@ -62,7 +66,9 @@ Assumption from the problem statement: *"Assume your server will be breached one
 - In-memory PII (decoded text, evidence index) is not zeroed. Python cannot guarantee wiping.
 - The size cap is per file. A tree of many medium files could still approach the RSS budget (Phase 6
   scale test).
-- A symlink that escapes the root is still *hashed* for the report (read-only), because SPEC requires every
-  input file to be listed. Its content is never parsed or exported.
+- A symlink that escapes the root is still *hashed* for the report (read-only, streamed, only within the size
+  cap), because SPEC requires every input file to be listed by the SHA-256 of its bytes. We verified that
+  `validate_output.py` fails the release otherwise. Its content is never parsed or exported. The official
+  validator itself crashes on a dangling symlink in the input; CLINVEIL reports it as `broken_symlink`.
 - Release privacy is measured only against the published attack suite. No finite synthetic attack
   proves anonymity.

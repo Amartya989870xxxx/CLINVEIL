@@ -26,12 +26,13 @@ from dataclasses import dataclass, field
 
 from clinveil.detection.identifiers import Hit, mrn_digit_core
 from clinveil.detection.lexicon import (
+    DEVA_CLINICAL_KEYS,
     GENERIC_NAME_TOKENS,
     KINSHIP_TERMS,
+    KNOWN_PLACES,
     NOT_NAME_WORDS,
     PATIENT_HONORIFICS,
     PREFIX_TITLES,
-    UP_DISTRICTS,
 )
 from clinveil.detection.text import Token, tokenize
 from clinveil.detection.translit import name_key
@@ -40,7 +41,13 @@ from clinveil.models.findings import EntityType
 
 NAME_TYPES = frozenset({EntityType.PATIENT_NAME, EntityType.RELATIVE_NAME})
 _NON_IDENTIFYING = (
-    GENERIC_NAME_TOKENS | NOT_NAME_WORDS | PATIENT_HONORIFICS | KINSHIP_TERMS | PREFIX_TITLES | UP_DISTRICTS
+    GENERIC_NAME_TOKENS
+    | NOT_NAME_WORDS
+    | PATIENT_HONORIFICS
+    | KINSHIP_TERMS
+    | PREFIX_TITLES
+    | KNOWN_PLACES
+    | DEVA_CLINICAL_KEYS
 )
 _LOOSE_CHANNELS = frozenset({Channel.FILENAME, Channel.KEY, Channel.HEADER, Channel.METADATA})
 _SEP_ONLY = re.compile(r"[ \t._\-/\\,:()]*")
@@ -101,7 +108,7 @@ class SensitiveValueIndex:
             self.phrases.setdefault(tuple(t.key for t in toks), entity)
         elif entity is EntityType.VILLAGE:
             keys = tuple(t.key for t in toks)
-            if (len(keys) >= 2 or len(keys[0]) >= 6) and " ".join(keys) not in UP_DISTRICTS:
+            if (len(keys) >= 2 or len(keys[0]) >= 6) and " ".join(keys) not in KNOWN_PLACES:
                 self.phrases.setdefault(keys, entity)
 
     # ------------------------------------------------------------------ matching

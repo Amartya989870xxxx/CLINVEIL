@@ -59,6 +59,27 @@ re-measured on a **mutated practice copy** (renamed columns, swapped names, new 
 0/4 canaries, 4855/4855 probes, 100% non-PII token retention; generated unseen-style data 0/1200 leaked.
 Not measured: a mutated copy of the *practice* data (a synthetic generator was used instead).
 
+## Phase 2.1: audit remediation ✅ (branch `phase-2.1-remediation`; evidence: [PHASE2_REMEDIATION.md](../evaluation/PHASE2_REMEDIATION.md))
+Every finding of the independent Phase 2 audit was reproduced before it was fixed (85 of 95 reproduction
+tests failed on `ac37504`). Changes:
+- non-Patient FHIR text detected;
+- preserved fields guarded instead of skipped;
+- purity-based label classification with restricted fuzzy matching;
+- decoded views (XHTML, HTML entities, %-escapes), every Unicode digit script, URL-safe/short base64;
+- names before relationship markers, labelled ABHA, STD landlines, doctor-protection ordering;
+- C/O complaint vocabulary; Devanagari clinical stop words;
+- FHIR id/fullUrl/reference rewriting, binary attachments withheld;
+- honest report counts, run-scoped caches, broken-symlink reporting, near-linear resolution;
+- a strict name key for Phase 3.
+
+✅ Measured:
+- practice data still 0/3230 leaked, and the output is byte-identical to Phase 2;
+- new adversarial generator 175/175 (Phase 2 code: 50/175);
+- 695 tests pass.
+
+Deferred: E5 (secret used by Phase 3/4), E3 target hashing (required by the official contract), WhatsApp
+sender role.
+
 ## Phase 3: identity resolution (15 pts plus utility coupling, about 1.5 days)
 - Evidence normalisation: digit cores of UHID/IPD/phone/Aadhaar/ABHA, names transliterated to one
   key space, DOB, relative, village, age at encounter
@@ -107,4 +128,5 @@ utility ≥ 0.40 coupling threshold with margin; age bands always contain the tr
 4. **P4: generalisation**: age bands, village → tehsil/district, PIN → 3-digit, plus a k-anonymity check over
    (age band, gender, district, admission week, rare diagnosis) with rare-cell suppression
 5. **P2 hardening**: mutated copy of the practice set (names swapped, labels renamed) as a second generalisation
-   benchmark; widen the district/tehsil gazetteer beyond UP
+   benchmark; widen the district/tehsil gazetteer beyond UP; decode hex / `\uXXXX` in plain text (scorer does).
+   Phase 3 must link with `translit.name_key_strict` plus corroborating identifiers, never the coarse `name_key`

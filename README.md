@@ -113,14 +113,15 @@ competition limits (offline, CPU, no model above 50M parameters).
 
 ## Security design (summary)
 
-Every input is untrusted. Symlinks leaving the input root and oversized files are quarantined
-unparsed. Any per-file failure quarantines that file, and the recorded reason is a fixed code or an
+Every input is untrusted. Symlinks leaving the input root, broken symlinks and oversized files are
+quarantined unparsed. Any per-file failure quarantines that file, and the recorded reason is a fixed code or an
 exception *type name*, never a message, because messages can echo PII. The secret is wrapped in a type
 that refuses to print or pickle. Findings and file handles hide their raw text from `repr`. Nothing is
-logged except counts. No intermediate files are written. The process refuses an output directory that
+logged except counts. No intermediate files are written, and in-memory memo caches are cleared when a run
+ends. The process refuses an output directory that
 overlaps its input. Full model: [docs/security/THREAT_MODEL.md](docs/security/THREAT_MODEL.md).
 
-## Known limitations (Phase 2)
+## Known limitations (Phase 2 / 2.1)
 
 - No patient linking yet (Phase 3). Output therefore does not depend on the secret, and `check_submission.py`
   warns about this.
@@ -129,7 +130,10 @@ overlaps its input. Full model: [docs/security/THREAT_MODEL.md](docs/security/TH
 - Names with no context cue that never appear in a structured field can be missed. With cross-file
   propagation disabled, the practice-data leak rises to 1.3%. See
   [PHASE2_DETECTION.md](docs/evaluation/PHASE2_DETECTION.md) for all known failure cases.
-- A file with an unsupported (binary) attachment is quarantined whole. XML, PDF and images are quarantined, not parsed.
+- A binary attachment inside JSON/FHIR is withheld (its `data` removed) since Phase 2.1; XML, PDF and images
+  as whole files are quarantined, not parsed. Hex and `\uXXXX` encodings inside plain text are not decoded.
+- The independent Phase 2 audit and its remediation (what was reproduced, fixed, partly fixed or deferred):
+  [PHASE2_REMEDIATION.md](docs/evaluation/PHASE2_REMEDIATION.md).
 
 ## Repository layout
 

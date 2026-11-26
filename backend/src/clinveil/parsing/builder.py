@@ -73,7 +73,20 @@ def _with_payloads(f: Field, payloads: list[attachments.Payload]) -> list[Field]
     segs, children = [], []
     for n, p in enumerate(payloads):
         child_addr = f"{f.address}#b64/{n}"
-        segs.append(Base64Segment(p.start, p.end, child_addr, p.encoding, p.padded, p.declared_type))
+        segs.append(
+            Base64Segment(
+                p.start,
+                p.end,
+                child_addr,
+                p.encoding,
+                p.padded,
+                p.declared_type,
+                withheld=p.withheld,
+                urlsafe=p.urlsafe,
+            )
+        )
+        if p.withheld:
+            continue  # nothing to analyse: the payload is dropped from the release
         children.append(
             Field(
                 address=child_addr,
@@ -136,14 +149,17 @@ def _build_delimited(source: SourceFile, text: str, delimiter: str, limits: Inge
                     value=cell,
                     label=header[c] if c < len(header) else None,
                 )
-                fields.extend(_with_payloads(f, attachments.find_undeclared(cell, limits)))
+                fields.extend(_with_payloads(f, attachments.find_undeclared(cell, limits, withhold_binary=True)))
     return Document(source=source, records=records, fields=fields, native=rows)
 
 
 def _build_text(source: SourceFile, text: str, limits: IngestLimits) -> Document:
     f = Field(address="doc", path=(), record="doc", channel=Channel.CONTENT, kind=FieldKind.TEXT, value=text)
     return Document(
-        source=source, records=["doc"], fields=_with_payloads(f, attachments.find_undeclared(text, limits)), native=text
+        source=source,
+        records=["doc"],
+        fields=_with_payloads(f, attachments.find_undeclared(text, limits, withhold_binary=True)),
+        native=text,
     )
 
 
@@ -219,10 +235,12 @@ def _build_json(source: SourceFile, data: Any, limits: IngestLimits) -> Document
             if isinstance(node, str):
                 payloads: list[attachments.Payload] = []
                 if ctype is not None and label is not None and attachments.is_declared_data_key(label):
-                    declared = attachments.decode_declared(node, ctype, limits)
-                    payloads = [declared] if declared else attachments.find_undeclared(node, limits)
+                    declared = attachments.decode_declared(node, ctype, limits, withhold_binary=True)
+                    payloads = (
+                        [declared] if declared else attachments.find_undeclared(node, limits, withhold_binary=True)
+                    )
                 else:
-                    payloads = attachments.find_undeclared(node, limits)
+                    payloads = attachments.find_undeclared(node, limits, withhold_binary=True)
                 fields.extend(_with_payloads(f, payloads))
             else:
                 fields.append(f)

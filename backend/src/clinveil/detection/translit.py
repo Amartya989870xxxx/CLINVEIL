@@ -59,7 +59,9 @@ _CONS = {
     "स": "s",
     "ह": "h",
     "ळ": "l",
+    "\ue000": "gy",  # ज्ञ (rewritten to this private-use code point before scanning): "gyan", not "jnan"
 }
+_JNA = "\u091c\u094d\u091e"  # ज + virama + ञ
 _NUKTA = {"क": "q", "ख": "kh", "ग": "gh", "ज": "z", "ड": "r", "ढ": "rh", "फ": "f", "य": "y"}
 _VOWELS = {
     "अ": "a",
@@ -95,7 +97,7 @@ _NASAL = {"ं": "n", "ँ": "n", "ः": "h"}
 @lru_cache(maxsize=50_000)
 def romanize(text: str) -> str:
     """Approximate Latin spelling of Devanagari text; non-Devanagari characters pass through."""
-    s = unicodedata.normalize("NFD", text)
+    s = unicodedata.normalize("NFD", text).replace(_JNA, "\ue000")
     out: list[str] = []
     i, n = 0, len(s)
     while i < n:
@@ -152,6 +154,7 @@ _FOLDS = (
     ("dh", "d"),
     ("ph", "f"),
     ("bh", "b"),
+    ("b", "v"),  # Bimla / Vimla, Binod / Vinod (b/v alternate across Hindi, Bengali, Odia spellings)
     ("jh", "j"),
     ("w", "v"),
     ("z", "j"),
@@ -180,7 +183,30 @@ def name_key(token: str) -> str:
         return ""
     for a, b in _FOLDS:
         t = t.replace(a, b)
-    t = t[0] + _VOWELS_RE.sub("", t[1:])  # keep the initial letter even if it is a vowel
+    head = "a" if t[0] in "aeiou" else t[0]  # an initial vowel is kept as one class: Umar ~ Omar, Ishaan ~ Eshaan
+    t = head + _VOWELS_RE.sub("", t[1:])
+    return _REPEATS.sub(r"\1", t)
+
+
+_STRICT_VOWELS = (("aa", "a"), ("ee", "i"), ("ii", "i"), ("oo", "u"), ("uu", "u"), ("ou", "u"), ("ei", "e"))
+
+
+@lru_cache(maxsize=100_000)
+def name_key_strict(token: str) -> str:
+    """Finer key that KEEPS vowel qualities (``Kiran`` != ``Karan``, ``Sita`` != ``Satya``).
+
+    Consonants are folded as in :func:`name_key`; long vowels are shortened (``Neeta`` ==
+    ``Nita`` == ``नीता``) and repeats collapsed. :func:`name_key` stays the recall-oriented
+    key used for redaction; this one is for Phase 3 linking, where a false merge of two
+    patients is worse than a missed variant.
+    """
+    t = latin_name_form(token)
+    if not t:
+        return ""
+    for a, b in _FOLDS:
+        t = t.replace(a, b)
+    for a, b in _STRICT_VOWELS:
+        t = t.replace(a, b)
     return _REPEATS.sub(r"\1", t)
 
 

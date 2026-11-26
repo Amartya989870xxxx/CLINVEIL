@@ -21,6 +21,7 @@ class InputFile:
     size: int
     is_symlink: bool
     escapes_root: bool
+    broken: bool = False  # a symlink whose target does not exist (nothing can be read)
 
     def __repr__(self) -> str:  # never let a filename reach a log line by accident
         return f"InputFile(size={self.size})"
@@ -31,15 +32,20 @@ def discover(root: Path) -> Iterator[InputFile]:
 
     Symlinked *directories* are not traversed (``rglob`` default). Symlinked *files*
     are yielded but flagged so the pipeline can quarantine them without parsing.
+    Broken symlinks are yielded too (flagged ``broken``), so they are reported as
+    quarantined instead of silently disappearing from the release.
     """
-    for p in sorted(x for x in root.rglob("*") if x.is_file()):
+    for p in sorted(x for x in root.rglob("*") if x.is_file() or (x.is_symlink() and not x.exists())):
         link = p.is_symlink()
-        escapes = link and not is_within(p, root)
+        broken = link and not p.exists()
+        escapes = link and not broken and not is_within(p, root)
         try:
-            size = p.stat().st_size
+            size = p.stat().st_size if not broken else 0
         except OSError:
             size = -1
-        yield InputFile(path=p, rel=p.relative_to(root).as_posix(), size=size, is_symlink=link, escapes_root=escapes)
+        yield InputFile(
+            path=p, rel=p.relative_to(root).as_posix(), size=size, is_symlink=link, escapes_root=escapes, broken=broken
+        )
 
 
 def sha256_file(path: Path) -> str:

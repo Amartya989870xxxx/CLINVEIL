@@ -182,9 +182,11 @@ def _concepts(spec: str) -> frozenset[str]:
     return frozenset(spec.split())
 
 
-NAME = _concepts(
-    "name naam nam fullname firstname lastname givenname surname first last given family middle forename local display"
-)
+#: Words that make a label a *name* label on their own.
+NAME_CORE = _concepts("name naam nam fullname firstname lastname givenname surname forename")
+#: Name parts: a name label only together with a core word or under a name container ("first", "family").
+NAME_PART = _concepts("first last given family middle local full")
+NAME = NAME_CORE | NAME_PART
 PATIENT = _concepts(
     "patient pt pat rogi mareez marij mariz beneficiary member insured applicant client caller "
     "raised visitor holder person"
@@ -192,7 +194,7 @@ PATIENT = _concepts(
 RELATIVE = _concepts(
     "father fathers husband husbands wife wifes mother mothers spouse guardian relative relatives "
     "attendant kin nok pita pati patni mata parent parents son daughter brother sister informant "
-    "caretaker escort emergency"
+    "caretaker escort"
 )
 DOCTOR = _concepts(
     "doctor dr doc consultant physician surgeon referring referred attending treating practitioner "
@@ -216,7 +218,7 @@ EMAIL = _concepts("email emailid mail")
 AADHAAR = _concepts("aadhaar aadhar adhaar adhar aadhaarno uid uidai")
 ABHA = _concepts("abha healthid abhaid phr abhanumber")
 PAN = _concepts("pan pancard panno")
-INSURANCE = _concepts("pmjay policy insurance ayushman cghs esic esi membership card")
+INSURANCE = _concepts("pmjay policy insurance ayushman cghs esic esi membership")
 MRN_STRONG = _concepts("uhid mrn crn regno registration panjikaran ipd ipno patientid pid hospitalid umid hosp")
 MRN_WEAK = _concepts("patient hospital reg ip adm admission case record file cr opd")
 ID_WORDS = _concepts("id no nos number ref code num nr")
@@ -227,15 +229,16 @@ NON_PII = _concepts(
 BIRTH = _concepts("dob birth birthdate dateofbirth janm janam born birthday")
 AGE = _concepts("age umar umr aayu ayu")
 GENDER = _concepts("gender sex ling")
-ADDRESS = _concepts("address addr pata residence resident line postal permanent location")
+ADDRESS = _concepts("address addr pata residence resident postal permanent")
 HOUSE = _concepts("house houseno hno makan flat door building plot")
-LOCALITY = _concepts("mohalla muhalla locality colony street area sector basti lane road gali galli")
+LOCALITY = _concepts("mohalla muhalla locality colony street sector basti lane road gali galli")
 LANDMARK = _concepts("landmark near nearby")
-VILLAGE = _concepts("village vill gaon gram gaav gav city town gaanv majra")
+VILLAGE = _concepts("village vill gaon gram gaav gav city town gaanv majra panchayat")
 TEHSIL = _concepts("tehsil tahsil taluk taluka block subdistrict mandal")
 DISTRICT = _concepts("district distt dist jila zila zilla")
 STATE = _concepts("state rajya")
 PIN = _concepts("pin pincode zip zipcode postcode")
+LOCATION_ALL = ADDRESS | HOUSE | LOCALITY | LANDMARK | VILLAGE | TEHSIL | DISTRICT | STATE | PIN
 DATE = _concepts(
     "date dt on at time timestamp registered admitted discharged collected reported generated created "
     "updated exported tarikh tithi mm dd yyyy yy"
@@ -246,11 +249,27 @@ FREE = _concepts(
     "feedback reason query body content"
 )
 CLINICAL = _concepts(
-    "test result unit range value loinc icd snomed code system diagnosis dx drug strength frequency "
+    "test tests results result unit units range value values loinc icd snomed code system diagnosis dx drug "
+    "strength frequency "
     "duration dose route vitals bp pulse spo2 temp weight height bmi rx procedure package amount status "
     "inr kg rate heart respiratory count level glucose sugar haemoglobin hemoglobin creatinine "
-    "allergy allergies"
+    "allergy allergies urea stain blood serum plasma urine culture organism vaccine antibiotic allergen "
+    "surgery parameter disease symptom condition asphyxia infection lesion grade stage score finding "
+    "white red platelet platelets wbc rbc hb haematocrit hematocrit sodium potassium bilirubin albumin "
+    "cholesterol triglycerides tsh hba1c ecg xray scan mri ct usg dosage gram mg ml mcg"
 )
+#: Neutral modifiers allowed inside a PII label ("Patient Mobile No", "Primary Contact", "Aadhaar Card").
+MODIFIERS = ID_WORDS | _concepts(
+    "patient pt pat person primary secondary alternate alt home office residential current registered "
+    "personal own holder payer insured beneficiary member card details detail info local full new old "
+    "by index map lookup keyed dict"  # mapping containers: "by_name", "by_uhid"
+)
+#: Fuzzy matching is only ever applied towards these distinctive PII label words (never short/common ones).
+FUZZY_TARGETS = _concepts(
+    "patient aadhaar aadhar mobile contact telephone address village mohalla guardian husband relative "
+    "attendant registration beneficiary pincode district tehsil landmark locality birthdate"
+)
+_SHORT_FUZZY_TARGETS = _concepts("name naam phone email addr uhid")
 
 _VOCAB = frozenset().union(
     NAME,
@@ -258,6 +277,7 @@ _VOCAB = frozenset().union(
     RELATIVE,
     DOCTOR,
     STAFF,
+    STAFF_VERB,
     ORG,
     RELATION_W,
     PHONE,
@@ -273,15 +293,7 @@ _VOCAB = frozenset().union(
     BIRTH,
     AGE,
     GENDER,
-    ADDRESS,
-    HOUSE,
-    LOCALITY,
-    LANDMARK,
-    VILLAGE,
-    TEHSIL,
-    DISTRICT,
-    STATE,
-    PIN,
+    LOCATION_ALL,
     DATE,
     FREE,
     CLINICAL,
@@ -311,10 +323,22 @@ def _edit_distance_le(a: str, b: str, k: int) -> bool:
 
 @lru_cache(maxsize=20_000)
 def _fuzzy(token: str) -> str:
+    """Correct a misspelt *distinctive PII* label word (``pateint`` -> ``patient``).
+
+    Only tokens of 6+ letters, at edit distance 1, towards ``FUZZY_TARGETS``. Short or
+    common words are never fuzzed (``urea`` is not ``area``, ``diet`` is not ``dist``,
+    ``religion`` is not ``relation``).
+    """
     if token in _VOCAB or len(token) < 4 or not token.isalpha():
         return token
-    k = 2 if len(token) >= 8 else 1
-    best = sorted(v for v in _VOCAB if len(v) >= 4 and _edit_distance_le(token, v, k))
+    if len(token) < 6:  # short words: only an adjacent-letter swap ("nmae"), never a substitution
+        for v in _SHORT_FUZZY_TARGETS:
+            if len(v) == len(token) and sorted(v) == sorted(token):
+                diff = [i for i in range(len(v)) if v[i] != token[i]]
+                if len(diff) == 2 and diff[1] == diff[0] + 1:
+                    return v
+        return token
+    best = sorted(v for v in FUZZY_TARGETS if _edit_distance_le(token, v, 1))
     return best[0] if best else token
 
 
@@ -361,14 +385,36 @@ def _sem(sem: Sem, conf: float, why: str) -> FieldSemantic:
     return FieldSemantic(sem, conf, why)
 
 
+def _pure(t: set[str], vocab: frozenset[str], extra: frozenset[str] = frozenset()) -> bool:
+    """Every token of the label belongs to the class vocabulary (or a neutral modifier)."""
+    return not (t - vocab - MODIFIERS - extra)
+
+
+_DOB_EXTRA = _concepts("date tithi mm dd yyyy yy")
+_BARE_NAME_PARTS = _concepts("first last given family middle")
+#: "address_note", "address_line", "Address Details": still the address itself.
+_LOCATION_QUALIFIERS = _concepts("line lines note notes remark remarks details detail text description info full")
+_PERSON_EXTRA = PATIENT | _concepts("next s")
+
+
 @lru_cache(maxsize=20_000)
 def classify_label(label: str) -> FieldSemantic:
-    """Classify one label on its own (see :func:`classify_path` for context)."""
+    """Classify one label on its own (see :func:`classify_path` for context).
+
+    A PII class is assigned only when *all* tokens belong to that class (plus neutral
+    modifiers): "Disease Name", "cell_count", "Gram Stain", "birth_weight",
+    "mother_tongue" are therefore never PII labels, while "Patient Name",
+    "Mobile No", "Father/Husband Name" and "Village/Mohalla" are.
+    """
     toks = label_tokens(label)
     t = set(toks)
     if not t:
         return UNKNOWN
-    if t & BIRTH or ("janm" in t and "tithi" in t):
+    if t & BIRTH:
+        if _pure(t, BIRTH, _DOB_EXTRA):
+            return _sem(Sem.DOB, 0.95, "birth")
+        return _sem(Sem.CLINICAL, 0.7, "birth_clinical")  # birth_weight, birth_history, birth_asphyxia
+    if "janm" in t and "tithi" in t:
         return _sem(Sem.DOB, 0.95, "birth")
     if "by" in t:  # "<role>_by": who did something
         if t & DOCTOR or "ref" in t:
@@ -377,19 +423,19 @@ def classify_label(label: str) -> FieldSemantic:
             return _sem(Sem.STAFF, 0.85, "staff_by")
         if t & PERSON_BY:
             return _sem(Sem.PERSON_NAME, 0.85, "person_by")
-    if "health" in t and t & ID_WORDS:
+    if "health" in t and t & ID_WORDS and _pure(t, frozenset({"health"})):
         return _sem(Sem.ABHA_NUMBER, 0.85, "health_id")
-    if "postal" in t and t & ID_WORDS:
+    if "postal" in t and t & ID_WORDS and _pure(t, frozenset({"postal"})):
         return _sem(Sem.PIN, 0.9, "postal_code")
-    if t & ABHA:
+    if t & ABHA and _pure(t, ABHA, frozenset({"address", "addr"})):
         return _sem(Sem.ABHA_ADDRESS if t & {"address", "addr"} else Sem.ABHA_NUMBER, 0.95, "abha")
-    if t & AADHAAR:
+    if t & AADHAAR and _pure(t, AADHAAR):
         return _sem(Sem.AADHAAR, 0.95, "aadhaar")
-    if t & PAN:
+    if t & PAN and _pure(t, PAN):
         return _sem(Sem.PAN, 0.9, "pan")
-    if t & EMAIL:
+    if t & EMAIL and _pure(t, EMAIL):
         return _sem(Sem.EMAIL, 0.95, "email")
-    if t & INSURANCE:
+    if t & INSURANCE and _pure(t, INSURANCE):
         return _sem(Sem.INSURANCE_ID, 0.9, "insurance")
     if t & PATH:  # "source_path", "exported_from": free text that may embed names/IDs
         return _sem(Sem.UNKNOWN, 0.5, "path")
@@ -397,20 +443,20 @@ def classify_label(label: str) -> FieldSemantic:
         return _sem(Sem.DATE, 0.9, "date")
     if t & NON_PII and (t & ID_WORDS or len(t) == 1):
         return _sem(Sem.NON_PII_ID, 0.85, "non_pii_id")
-    if t & RELATION_W and not t & NAME:
+    if t & RELATION_W and _pure(t, RELATION_W):
         return _sem(Sem.RELATION, 0.9, "relation")
-    if t & DOCTOR:
+    if t & DOCTOR and _pure(t, DOCTOR, NAME):
         return _sem(Sem.DOCTOR_NAME, 0.9, "doctor")
-    if t & STAFF and not t & PATIENT:
+    if t & STAFF and _pure(t, STAFF, NAME):
         return _sem(Sem.STAFF, 0.85, "staff")
-    if t & PHONE and t & {"person", "name", "naam"}:
+    if t & PHONE and t & {"person", "name", "naam"} and _pure(t, PHONE, NAME | RELATIVE | _concepts("emergency")):
         return _sem(Sem.RELATIVE_NAME, 0.85, "contact_person")
-    if t & PHONE:
+    if t & PHONE and _pure(t, PHONE, RELATIVE | _concepts("emergency")):
         return _sem(Sem.PHONE, 0.95, "phone")
-    if t & MRN_STRONG or ("patient" in t and t & ID_WORDS) or (t & MRN_WEAK and t & ID_WORDS):
+    if (t & MRN_STRONG and _pure(t, MRN_STRONG | MRN_WEAK)) or (t & MRN_WEAK and t & ID_WORDS and _pure(t, MRN_WEAK)):
         return _sem(Sem.MRN, 0.9, "mrn")
-    if t & RELATIVE:
-        return _sem(Sem.RELATIVE_NAME, 0.9 if t & NAME else 0.85, "relative")
+    if t & RELATIVE and _pure(t, RELATIVE, NAME | _PERSON_EXTRA):
+        return _sem(Sem.RELATIVE_NAME, 0.9 if t & NAME_CORE else 0.85, "relative")
     for concept, sem in (
         (VILLAGE, Sem.VILLAGE),
         (LOCALITY, Sem.LOCALITY),
@@ -418,31 +464,32 @@ def classify_label(label: str) -> FieldSemantic:
         (DISTRICT, Sem.DISTRICT),
         (STATE, Sem.STATE),
     ):
-        if t & concept and t & NAME:  # "Village Name", "District Name" name a place, not a person
+        if t & concept and t & NAME_CORE and _pure(t, concept | NAME_CORE):  # "Village Name": a place
             return _sem(sem, 0.85, f"{sem.value}_name")
-    if t & NAME or "patient" in t:
+    if t & NAME_CORE:
         if t & ORG:
             return _sem(Sem.ORGANIZATION, 0.85, "organization")
-        generic = not (t & PATIENT)
-        return _sem(Sem.PERSON_NAME, 0.8 if generic else 0.9, "name" if generic else "patient_name")
-    if t & PIN:
-        return _sem(Sem.PIN, 0.9, "pin")
-    if t & HOUSE:
-        return _sem(Sem.HOUSE, 0.85, "house")
-    if t & LANDMARK:
-        return _sem(Sem.LANDMARK, 0.85, "landmark")
-    if t & VILLAGE:
-        return _sem(Sem.VILLAGE, 0.85, "village")
-    if t & LOCALITY:
-        return _sem(Sem.LOCALITY, 0.8, "locality")
-    if t & TEHSIL:
-        return _sem(Sem.TEHSIL, 0.9, "tehsil")
-    if t & DISTRICT:
-        return _sem(Sem.DISTRICT, 0.9, "district")
-    if t & STATE:
-        return _sem(Sem.STATE, 0.9, "state")
-    if t & ADDRESS:
-        return _sem(Sem.ADDRESS, 0.85, "address")
+        if _pure(t, NAME, _PERSON_EXTRA):
+            generic = not (t & PATIENT)
+            return _sem(Sem.PERSON_NAME, 0.8 if generic else 0.9, "name" if generic else "patient_name")
+        if t & CLINICAL:  # "Disease Name", "Antibiotic Name", "Parameter Name"
+            return _sem(Sem.CLINICAL, 0.8, "clinical_name")
+        return UNKNOWN  # "<unknown thing> Name": not provably a person
+    if t & _BARE_NAME_PARTS and _pure(t, _BARE_NAME_PARTS, PATIENT):  # "first", "last_name"-less "given"
+        return _sem(Sem.PERSON_NAME, 0.75, "name_part")
+    for concept, sem, conf in (
+        (PIN, Sem.PIN, 0.9),
+        (HOUSE, Sem.HOUSE, 0.85),
+        (LANDMARK, Sem.LANDMARK, 0.85),
+        (VILLAGE, Sem.VILLAGE, 0.85),
+        (LOCALITY, Sem.LOCALITY, 0.8),
+        (TEHSIL, Sem.TEHSIL, 0.9),
+        (DISTRICT, Sem.DISTRICT, 0.9),
+        (STATE, Sem.STATE, 0.9),
+        (ADDRESS, Sem.ADDRESS, 0.85),
+    ):
+        if t & concept and _pure(t, LOCATION_ALL, _LOCATION_QUALIFIERS):
+            return _sem(sem, conf, sem.value)
     if t & AGE:
         return _sem(Sem.AGE, 0.9, "age")
     if t & GENDER:
@@ -453,7 +500,7 @@ def classify_label(label: str) -> FieldSemantic:
         return _sem(Sem.ORGANIZATION, 0.7, "organization")
     if t & CLINICAL:
         return _sem(Sem.CLINICAL, 0.8, "clinical")
-    if t & PATIENT:
+    if t & PATIENT and _pure(t, PATIENT):
         return _sem(Sem.PERSON_NAME, 0.6, "person")
     return UNKNOWN
 
@@ -499,7 +546,7 @@ def classify_path(keys: tuple[str, ...]) -> FieldSemantic:
         a = classify_label(anc)
         if a.sem is Sem.UNKNOWN:
             continue
-        name_like = own.sem is Sem.PERSON_NAME or bool(own_toks & NAME)
+        name_like = own.sem is Sem.PERSON_NAME or bool(own_toks & NAME)  # incl. name parts under a container
         if a.sem in (Sem.ORGANIZATION, Sem.CLINICAL, Sem.DOCTOR_NAME, Sem.STAFF):
             return _sem(a.sem, 0.85, f"{a.evidence}>child") if name_like or own.sem is Sem.UNKNOWN else own
         if a.sem is Sem.RELATIVE_NAME and (name_like or own.sem is Sem.UNKNOWN):

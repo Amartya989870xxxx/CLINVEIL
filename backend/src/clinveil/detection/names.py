@@ -27,16 +27,21 @@ from collections.abc import Iterator
 from clinveil.detection.clinical import KeepSpan
 from clinveil.detection.identifiers import Hit
 from clinveil.detection.lexicon import (
+    ANATOMY_WORDS,
     COMPLAINT_WORDS,
+    DEVA_CLINICAL_KEYS,
     DEVA_HONORIFICS,
     DEVA_PREFIX_TITLES,
+    EPONYM_ROOTS,
     GIVEN_NAMES,
     KINSHIP_TERMS,
+    KNOWN_PLACES,
     NOT_NAME_WORDS,
     PATIENT_HONORIFICS,
     PREFIX_TITLES,
+    PROCEDURE_WORDS,
+    SEVERITY_WORDS,
     SURNAMES,
-    UP_DISTRICTS,
 )
 from clinveil.detection.text import Token, normalize_token, tokenize
 from clinveil.detection.translit import name_key
@@ -90,9 +95,24 @@ _HONORIFIC_TOKENS = PATIENT_HONORIFICS | KINSHIP_TERMS
 _SPACE = re.compile(r"[  ]")
 
 
+_DEVA_STOP_KEYS = frozenset(normalize_token(w) for w in _DEVA_STOP) | DEVA_CLINICAL_KEYS | KNOWN_PLACES
+#: Words that follow "C/O" in a presenting complaint: never the start of a relative's name.
+CARE_OF_COMPLAINT = COMPLAINT_WORDS | SEVERITY_WORDS | ANATOMY_WORDS | PROCEDURE_WORDS | NOT_NAME_WORDS
+_ACTION_VERBS = frozenset(
+    "started inserted removed given done changed applied checked administered completed stopped repeated "
+    "sent received collected shifted transferred noted seen advised planned continued restarted held "
+    "taken passed reviewed explained discontinued".split()
+)
+
+
 def _is_name_token(tok: Token, *, allow_lower: bool) -> bool:
     if tok.is_devanagari:
-        return tok.text not in _DEVA_STOP and tok.text not in DEVA_HONORIFICS and not tok.key.isdigit()
+        return (
+            tok.text not in _DEVA_STOP
+            and tok.key not in _DEVA_STOP_KEYS
+            and tok.text not in DEVA_HONORIFICS
+            and not tok.key.isdigit()
+        )
     if not tok.text.isalpha() and not all(c.isalpha() or c in "'’-" for c in tok.text):
         return False
     if tok.key in _STOP:
@@ -135,10 +155,13 @@ def name_after(
     return (start, end) if start is not None else None
 
 
-def name_before(text: str, tokens: list[Token], upto: int, *, max_tokens: int = 3) -> tuple[int, int] | None:
+def name_before(
+    text: str, tokens: list[Token], upto: int, *, max_tokens: int = 3, allow_comma: bool = False
+) -> tuple[int, int] | None:
     """Span of capitalised/Devanagari name tokens ending (modulo one space) right before ``upto``."""
     j = max((k for k, t in enumerate(tokens) if t.end <= upto), default=-1)
-    if j < 0 or text[tokens[j].end : upto] not in ("", " ", "\u00a0"):
+    gaps = ("", " ", "\u00a0") + ((",", ", ", " , ", " ,") if allow_comma else ())
+    if j < 0 or text[tokens[j].end : upto] not in gaps:
         return None
     start = end = None
     taken = 0
@@ -185,7 +208,8 @@ RELATION_RE = re.compile(
     r"(?i)(?<![/\w])(?:([SDWFMC])\s?/\s?O|son\s+of|daughter\s+of|wife\s+of|husband\s+of|"
     r"father\s+of|mother\s+of|care\s+of)\b\.?\s*:?\s*"
 )
-DEVA_RELATION_RE = re.compile(r"(?:पुत्र|पुत्री|पत्नी|पति|पिता|माता|सुपुत्र|सुपुत्री|धर्मपत्नी)\s+(?!का|की|के)")
+# the lookahead excludes the particles "का/की/के" (``पिता का नाम``), not names that start with them (``केशव``)
+DEVA_RELATION_RE = re.compile(r"(?:पुत्र|पुत्री|पत्नी|पति|पिता|माता|सुपुत्र|सुपुत्री|धर्मपत्नी)\s+(?!(?:का|की|के)(?=[\s:।,]|$))")
 TITLE_RE = re.compile(r"(?i)\b(?:(?:Mr|Mrs|Ms|Miss|Shri|Shree|Sri|Smt|Shrimati|Kumari|Km|Late)\b\.?|Pt\.)\s+")
 DEVA_TITLE_RE = re.compile(r"(?:श्रीमती|श्री|सुश्री|कुमारी|स्व\.)\s*")
 BY_CUE_RE = re.compile(
@@ -235,13 +259,18 @@ def detect_names(text: str) -> tuple[list[Hit], list[KeepSpan]]:
     for m in RELATION_RE.finditer(text):
         if (m.group(1) or "").upper() == "C" or m.group().lower().startswith("care"):
             nxt = next((t for t in tokens if t.start >= m.end()), None)
-            if nxt is None or nxt.key in COMPLAINT_WORDS or not nxt.text[:1].isupper() and not nxt.is_devanagari:
-                continue  # "C/O fever …" is a presenting complaint
-            if text[m.start() : m.end()].rstrip().endswith(":") and nxt.key in COMPLAINT_WORDS:
-                continue
+            if nxt is None or nxt.key in CARE_OF_COMPLAINT or not nxt.text[:1].isupper() and not nxt.is_devanagari:
+                continue  # "C/O fever …", "C/O Left knee pain": a presenting complaint
+            # "C/O <Name>" (care of): contextual only, never seeded into the run-wide index
+            add(name_after(text, tokens, m.end(), allow_lower=False), R, 0.85, "care_of")
+            continue
         add(name_after(text, tokens, m.end(), allow_lower=False), R, 0.9, "relation_marker")
+        if (m.group(1) or "").upper() in ("S", "D", "W") or re.match(r"(?i)(?:son|daughter|wife)\s", m.group()):
+            # "Rani, W/o Velan": the name BEFORE the marker is the patient
+            add(name_before(text, tokens, m.start(), allow_comma=True), P, 0.85, "name_before_relation")
     for m in DEVA_RELATION_RE.finditer(text):
         add(name_after(text, tokens, m.end(), allow_lower=False), R, 0.85, "relation_marker")
+        add(name_before(text, tokens, m.start(), allow_comma=True), P, 0.85, "name_before_relation")
     for m in TITLE_RE.finditer(text):
         add(name_after(text, tokens, m.end(), allow_lower=False), P, 0.85, "title")
     for m in DEVA_TITLE_RE.finditer(text):
@@ -256,10 +285,15 @@ def detect_names(text: str) -> tuple[list[Hit], list[KeepSpan]]:
         span = name_after(text, tokens, m.end(), allow_lower=False, max_tokens=3)
         if not span:
             continue
+        inside = [t for t in tokens if span[0] <= t.start < span[1]]
+        if any(t.key in PROCEDURE_WORDS or t.key in ANATOMY_WORDS for t in inside):
+            continue  # "14:00 - Blood Transfusion started": an action, not a person
+        nxt = next((t for t in tokens if t.start >= span[1]), None)
+        if nxt is not None and nxt.key in _ACTION_VERBS and text[span[1] : nxt.start] == " ":
+            continue
         follow = text[span[1] : span[1] + 3]
-        n_tok = sum(1 for t in tokens if span[0] <= t.start < span[1])
-        if n_tok >= 2 or follow[:2] in (" (", " -", " –", ", "):
-            add(span, P, 0.8, "timeline")
+        if len(inside) >= 2 or follow[:2] in (" (", " -", " –", ", "):
+            add(span, _timeline_role(text, span), 0.8, "timeline")
     for m in MUSLIM_PREFIX_RE.finditer(text):
         span = name_after(text, tokens, m.end(), allow_lower=False, max_tokens=3)
         if span:
@@ -274,7 +308,8 @@ def detect_names(text: str) -> tuple[list[Hit], list[KeepSpan]]:
     for m in ROLE_SUFFIX_RE.finditer(text):
         add(name_before(text, tokens, m.start()), R, 0.85, "role_suffix")
     for m in POSSESSIVE_RE.finditer(text):
-        if normalize_token(m.group(1)) not in NOT_NAME_WORDS:
+        root = normalize_token(m.group(1))
+        if root not in NOT_NAME_WORDS and root not in EPONYM_ROOTS:  # "Crohn's condition" is a disease
             add((m.start(1), m.end(1)), P, 0.8, "possessive")
     hits.extend(_gazetteer(text, tokens))
     return hits, keeps
@@ -291,12 +326,25 @@ def _gazetteer(text: str, tokens: list[Token]) -> Iterator[Hit]:
             continue
         if not (_is_name_token(a, allow_lower=False) and _is_name_token(b, allow_lower=False)):
             continue
-        if a.key in UP_DISTRICTS or b.key in UP_DISTRICTS:
+        if a.key in KNOWN_PLACES or b.key in KNOWN_PLACES:
             continue
         if a.key in GIVEN_NAMES and b.key in SURNAMES:
             yield Hit(a.start, b.end, P, 0.75, "gazetteer")
         elif a.key in GIVEN_NAMES and len(b.key) >= 3:
             yield Hit(a.start, b.end, P, 0.6, "gazetteer_weak")
+
+
+_RELATIVE_CONTEXT = re.compile(
+    r"(?i)\b(?:attendant|relative|visitor|guardian|wife|husband|son|daughter|father|mother|brother|sister|"
+    r"caretaker|escort|bystander|kin|informant|family|spouse)\b"
+)
+
+
+def _timeline_role(text: str, span: tuple[int, int]) -> EntityType:
+    """Nursing/visitor log line: the person is a relative when the line says so, else the patient."""
+    line_end = text.find("\n", span[1])
+    rest = text[span[1] : line_end if line_end >= 0 else len(text)][:60]
+    return R if _RELATIVE_CONTEXT.search(rest) else P
 
 
 def looks_like_person_name(value: str) -> bool:

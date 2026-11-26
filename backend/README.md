@@ -19,10 +19,10 @@ byte-deterministic. Fully offline, standard library only.
 | `config/` | `Policy` from `config/policy.yaml` (flat `key: value`) | `policy.py` |
 | `ingestion/` | sorted discovery, symlink and size flags, streamed hashing; content-based detection; validated decoding; limits | `discovery.py`, `detect.py`, `signatures.py`, `decoding.py`, `plausibility.py`, `limits.py` |
 | `parsing/` | the common IR builder; CSV/TSV, bounded JSON, FHIR enumeration, base64 payloads | `builder.py`, `csv_format.py`, `json_format.py`, `json_safety.py`, `fhir.py`, `attachments.py` |
-| `detection/` | Phase 2 engine: semantics, validated identifiers, contextual names, addresses, clinical protection, value-index propagation, resolution | `engine.py`, `semantics.py`, `identifiers.py`, `names.py`, `addresses.py`, `clinical.py`, `value_index.py`, `resolve.py`, `text.py`, `translit.py`, `lexicon.py` |
+| `detection/` | Phase 2 engine: semantics, validated identifiers, contextual names, addresses, clinical protection, value-index propagation, resolution; decoded views and run-scoped cache clearing (2.1) | `engine.py`, `semantics.py`, `identifiers.py`, `names.py`, `addresses.py`, `clinical.py`, `value_index.py`, `resolve.py`, `text.py`, `translit.py`, `lexicon.py`, `views.py`, `caches.py` |
 | `linking/` | cross-document identity resolution (Phase 3) | `linker.py` |
 | `privacy/` | HMAC pseudonyms, per-patient date shifts, generalisation | `pseudonym.py`, `generalize.py` |
-| `sanitization/` | finding application (placeholders, numbers → 0, FHIR birthDate → year), payload re-encoding, path renaming, renderers | `processors.py`, `render.py` |
+| `sanitization/` | finding application (placeholders, numbers → 0, FHIR birthDate → year), payload re-encoding, binary-attachment withholding, coordinated FHIR id rewriting, path renaming, renderers | `processors.py`, `render.py` |
 | `export/` | release writers (byte formatting matches the starter) | `release.py` |
 | `security/` | `ReleaseSecret`, reason codes, path containment | `secrets.py`, `errors.py`, `paths.py` |
 | `validation/` | pre-exit release check (false-success guard) | `contract.py` |
@@ -47,10 +47,10 @@ cd backend
 
 | Suite | Covers |
 |---|---|
-| `unit/` | detection layers (Unicode offsets, transliteration, about 90 renamed/Hindi labels, identifiers incl. Verhoeff, contextual names, addresses, value index, resolution), pseudonyms, date shifts, encodings, content detection, JSON safety, base64, FHIR, IR, policy, security primitives |
+| `unit/` | detection layers (Unicode offsets, transliteration, about 90 renamed/Hindi labels, identifiers incl. Verhoeff, contextual names, addresses, value index, resolution incl. an equivalence property test against the original quadratic resolver), pseudonyms, date shifts, encodings, content detection, JSON safety, base64, FHIR, IR, policy, security primitives |
 | `integration/` | full CLI on synthetic trees: statuses, reason codes, locators, attachments, base64-aware leak scan, cross-channel propagation (notes, filenames, metadata, keys, headers, payloads), no over-propagation, report/log counts |
-| `regression/` | practice-data release (misc outcomes, CSV/JSON/FHIR structure, renames, official `check_dev.py` thresholds), determinism, meaning-trap spec incl. the mandatory Phase 2 cases |
-| `generalization/` | seeded unseen-style datasets (invented names, renamed headers, new ID/phone formats, PII in alternate channels) through the real CLI |
+| `regression/` | practice-data release (misc outcomes, CSV/JSON/FHIR structure, renames, official `check_dev.py` thresholds), determinism, meaning-trap spec incl. the mandatory Phase 2 cases; `test_phase21_audit.py`: one reproduction/regression test per audit finding (B1…E4) |
+| `generalization/` | seeded unseen-style datasets (invented names, renamed headers, new ID/phone formats, PII in alternate channels) through the real CLI; `adversarial.py` + `test_phase21_adversarial.py`: 7 audit attack classes × 25 seeds (unseen FHIR resources, clinical columns, relationship formats, nine digit scripts, encodings, ID prefixes, similar names next to a doctor) |
 | `security/` | secret never written, PII-free channels, input untouched, symlinks, size cap, fail-closed |
 
 `xfail(strict=True)` marks a *known* gap. When a phase fixes it, the test XPASSes, the suite fails,
@@ -59,7 +59,7 @@ and the marker must be removed, so the suite always states exactly what the engi
 structure and the official checker's thresholds instead of byte deltas.
 
 ```bash
-python backend/scripts/dev_eval.py --output OUT   # official-style token/digit-core leak, probes, token retention (dev only)
+python backend/scripts/dev_eval.py --output OUT   # SCORING.md-style record-level leak, field-level probes, retention (dev only)
 ```
 
 All fixtures are synthetic and written for the tests. Practice data is read from
