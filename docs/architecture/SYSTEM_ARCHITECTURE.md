@@ -107,7 +107,7 @@ lives only in memory and is never serialised (see the threat model).
 
 | Boundary | Rule |
 |---|---|
-| input → process | never parse a symlink target outside the root (it is stream-hashed only if it is a regular file within the size cap, because the official contract identifies inputs by that hash); broken symlinks are reported, not dropped; cap sizes; content-based detection (the extension is only evidence); bounded JSON |
+| input → process | never open a symlink target outside the root (not even to hash it: an empty placeholder is declared `suppressed`); every read opens the verified real path inside the root with `O_NOFOLLOW \| O_NONBLOCK` and requires a regular file; broken symlinks and FIFOs/devices are reported unopened; cap sizes; content-based detection (the extension is only evidence); bounded JSON |
 | process → release | only sanitised content crosses; quarantined files cross as a hash and a reason code only |
 | process → stdout/stderr/logs | counts and fixed strings only; no tracebacks (they can contain values) |
 | secret | env → `ReleaseSecret` → HMAC only; refuses `repr`, `str`, format and pickle |

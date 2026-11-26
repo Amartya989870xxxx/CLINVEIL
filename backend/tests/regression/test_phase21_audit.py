@@ -302,10 +302,10 @@ def test_C6_fhir_ids_with_embedded_hospital_ids_are_rewritten_consistently():
                 "resource": {"resourceType": "Patient", "id": "UHID-004417", "name": [{"text": PAT}]},
             },
             {
-                "fullUrl": "urn:uuid:3e8b02cd-9e10-4da8-9053-d47573e43248",
+                "fullUrl": "urn:uuid:0f4d2a9c-6b1e-4c3a-8d7f-2e9b5a1c7d40",
                 "resource": {
                     "resourceType": "Encounter",
-                    "id": "3e8b02cd-9e10-4da8-9053-d47573e43248",
+                    "id": "0f4d2a9c-6b1e-4c3a-8d7f-2e9b5a1c7d40",
                     "status": "finished",
                     "subject": {"reference": "Patient/UHID-004417"},
                 },
@@ -314,7 +314,7 @@ def test_C6_fhir_ids_with_embedded_hospital_ids_are_rewritten_consistently():
     }
     out, text = _run_bundle(bundle)
     assert "004417" not in text
-    assert "3e8b02cd-9e10-4da8-9053-d47573e43248" in text  # ordinary UUIDs untouched
+    assert "0f4d2a9c-6b1e-4c3a-8d7f-2e9b5a1c7d40" in text  # ordinary UUIDs untouched
     from clinveil.parsing.fhir import build_index
 
     idx = build_index(out)
@@ -560,13 +560,7 @@ def test_E2_pii_caches_are_cleared_after_a_run(tmp_path):
 
 # --------------------------------------------------------------------------- E3 symlinks
 def test_E3_escaping_and_broken_symlinks(tmp_path):
-    """Escaping links are never parsed or exported; broken links are reported, not dropped.
-
-    The official contract identifies each input by the SHA-256 of the bytes behind its
-    path (``validate_output.py`` follows the link and fails the run when an input is
-    neither exported nor declared), so a regular, size-capped target is stream-hashed;
-    an oversized target is not read at all (see PHASE2_REMEDIATION.md, E3).
-    """
+    """Escaping links: target never read or hashed; broken links reported, not dropped (see S1)."""
     import hashlib
 
     from conftest import run_cli
@@ -576,22 +570,20 @@ def test_E3_escaping_and_broken_symlinks(tmp_path):
     (inp / "ok.txt").write_text("BP 120/80")
     secret = tmp_path / "outside.txt"
     secret.write_text(f"Name: {PAT}")
-    big = tmp_path / "outside_big.txt"
-    big.write_text("x" * 4096)
     (inp / "link.txt").symlink_to(secret)
-    (inp / "link_big.txt").symlink_to(big)
     (inp / "dangling.txt").symlink_to(tmp_path / "does-not-exist.txt")
-    policy = tmp_path / "policy.yaml"
-    policy.write_text("max_file_bytes: 1024\n")
-    r = run_cli(inp, tmp_path / "out", extra_args=["--policy", str(policy)])
+    r = run_cli(inp, tmp_path / "out")
     assert r.code == 0, r.stderr
     rep = json.loads((tmp_path / "out/report.json").read_text())
-    reasons = sorted(e.get("reason") for e in rep["files"] if e["status"] == "quarantined")
-    assert reasons == ["broken_symlink", "symlink_outside_input", "symlink_outside_input"]
-    assert rep["counts"]["files_total"] == 4
-    assert hashlib.sha256(big.read_bytes()).hexdigest() not in json.dumps(rep)  # over the cap: never read
+    assert hashlib.sha256(secret.read_bytes()).hexdigest() not in json.dumps(rep)  # never read, never hashed
+    by_reason = {e.get("reason"): e for e in rep["files"] if e.get("reason")}
+    assert by_reason["broken_symlink"]["status"] == "quarantined"
+    link = by_reason["symlink_outside_input"]
+    assert link["status"] == "suppressed" and link["output"] == "sanitized/link.txt"
+    assert (tmp_path / "out/sanitized/link.txt").read_bytes() == b""  # content-free placeholder
+    assert rep["counts"]["files_total"] == 3 and rep["counts"]["files_quarantined"] == 1
     released = "".join(p.read_text() for p in (tmp_path / "out").rglob("*") if p.is_file())
-    assert PAT_G not in released and not (tmp_path / "out/sanitized/link.txt").exists()
+    assert PAT_G not in released
 
 
 # --------------------------------------------------------------------------- E4 performance

@@ -113,8 +113,9 @@ competition limits (offline, CPU, no model above 50M parameters).
 
 ## Security design (summary)
 
-Every input is untrusted. Symlinks leaving the input root, broken symlinks and oversized files are
-quarantined unparsed. Any per-file failure quarantines that file, and the recorded reason is a fixed code or an
+Every input is untrusted. A symlink leaving the input root is never opened (its path gets an empty,
+declared placeholder); broken symlinks, FIFOs/devices and oversized files are quarantined unparsed, and
+every read opens the verified real path inside the root (`O_NOFOLLOW`, regular files only). Any per-file failure quarantines that file, and the recorded reason is a fixed code or an
 exception *type name*, never a message, because messages can echo PII. The secret is wrapped in a type
 that refuses to print or pickle. Findings and file handles hide their raw text from `repr`. Nothing is
 logged except counts. No intermediate files are written, and in-memory memo caches are cleared when a run

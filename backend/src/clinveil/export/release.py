@@ -66,13 +66,14 @@ def build_report(
 ) -> dict:
     """SPEC §5 report. ``entities`` counts redactions actually applied, by entity type (no values)."""
     n_san = sum(e.status == "sanitized" for e in files)
+    n_quar = sum(e.status == "quarantined" for e in files)  # "suppressed" placeholders are neither
     return {
         "schema": REPORT_SCHEMA,
         "files": [e.to_json_obj() for e in files],
         "counts": {
             "files_total": len(files),
             "files_sanitized": n_san,
-            "files_quarantined": len(files) - n_san,
+            "files_quarantined": n_quar,
             "records_processed": len(records),
             "identifiers_detected": counts.identifiers_detected,
             "records_linked": sum(r.patient is not None for r in records),

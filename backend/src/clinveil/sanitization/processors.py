@@ -13,9 +13,11 @@ Replacement policy (deterministic, non-sensitive, schema-safe):
   an untouched payload keeps its original bytes;
 * CSV headers that held personal values are de-duplicated (``[MRN] [NAME] #2``);
 * a binary payload (scan, photo, PDF) cannot be sanitised: it is *withheld*. A JSON
-  value that is entirely the payload is removed with its key (FHIR ``Attachment.data``
-  is optional, ``contentType`` and the rest of the resource stay); a payload embedded
-  in text is replaced by ``[ATTACHMENT-WITHHELD]``.
+  object member that is entirely the payload is removed with its key (FHIR
+  ``Attachment.data``, ``Binary.data`` and ``valueBase64Binary`` are optional;
+  ``contentType`` and the rest of the resource stay) and, for a declared attachment, its
+  ``hash`` and ``size`` go too. A payload that is an array element, or is embedded in
+  text, is replaced by ``[ATTACHMENT-WITHHELD]`` so array lengths and positions are kept.
 """
 
 from __future__ import annotations
@@ -128,6 +130,8 @@ class Sanitizer:
             return replacement_text(value, applied, fhir_date=f.fhir is not None)
         if (
             f.kind is FieldKind.JSON_STRING
+            and f.path
+            and isinstance(f.path[-1], str)  # an object member; array elements keep their slot (see below)
             and len(f.segments) == 1
             and f.segments[0].withheld
             and not value[: f.segments[0].start].strip()
@@ -173,6 +177,13 @@ class Sanitizer:
                     new = f"{name} #{n}"
             if new is not None and new != f.value:
                 replacements[f.address] = new
+            if new is WITHHELD and f.segments[0].declared_type is not None:
+                # the attachment's integrity metadata describes the removed bytes: Attachment.hash is a
+                # SHA-1 fingerprint of the image (it could confirm a known photo), Attachment.size is stale
+                parent = _parent(doc.native, f.path)
+                for k in ("hash", "size"):
+                    if isinstance(parent, dict) and k in parent:
+                        replacements[pointer((*f.path[:-1], k))] = WITHHELD
         if doc.source.format is Format.FHIR:
             replacements.update(fhir_id_rewrites(doc, analysis))
         return render(doc, replacements), self._records(doc, out_rel)
@@ -212,6 +223,16 @@ def sanitized_relpath(doc: Document, analysis: DocumentAnalysis, reserved: set[s
         rel = candidate
     taken.add(rel)
     return rel
+
+
+def _parent(root: object, path: tuple) -> object:
+    node = root
+    for part in path[:-1]:
+        try:
+            node = node[part]  # type: ignore[index]
+        except (KeyError, IndexError, TypeError):
+            return None
+    return node
 
 
 _RID_NS = uuid.UUID("8f1d6f2e-4c1b-5a7e-9d3c-2b6a1e0f5c47")  # fixed namespace: new ids carry no input data

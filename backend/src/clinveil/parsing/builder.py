@@ -65,6 +65,25 @@ def build_document(rel: str, sha256: str, size: int, ext: str, det: Detection, l
     return doc
 
 
+def build_placeholder(rel: str, report_id: str, ext: str) -> Document:
+    """An empty stand-in for an input whose bytes are never read (a symlink escaping the input root).
+
+    It holds only the path's filename fields (so a name in the link's filename is still detected
+    and renamed) and no records. It renders as an empty file, or ``{}`` for ``.json`` so the
+    placeholder still parses in its declared format. Nothing in it comes from the link target.
+    """
+    is_json = ext == ".json"
+    source = SourceFile(
+        rel=rel,
+        sha256=report_id,
+        size=0,
+        ext=ext,
+        format=Format.JSON if is_json else Format.TEXT,
+        encoding="utf-8",
+    )
+    return Document(source=source, records=[], fields=_filename_fields(rel), native={} if is_json else "")
+
+
 # --------------------------------------------------------------------------- helpers
 def _with_payloads(f: Field, payloads: list[attachments.Payload]) -> list[Field]:
     """Attach decoded base64 payloads to ``f`` as segments + BASE64_TEXT child fields."""

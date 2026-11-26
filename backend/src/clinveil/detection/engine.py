@@ -97,6 +97,8 @@ _EVIDENCE = {
 }
 SEED_EVIDENCE = frozenset({Evidence.FIELD_SEMANTICS, Evidence.LABEL, Evidence.VALIDATED_PATTERN})
 FHIR_ID_EVIDENCE = "fhir_id"
+#: Field semantics below this confidence are not trusted to confirm a value as PII run-wide.
+WEAK_SEMANTIC = 0.8
 #: FHIR elements that carry codes / enumerations: preserved (only validated identifiers inside are removed).
 FHIR_CODE_KEYS = frozenset(
     "system url status use code unit intent language version comparator contentType priority mode type "
@@ -403,6 +405,10 @@ class DetectionEngine:
             structured = self._structured(text, sem)
             if structured is not None:
                 hits = structured
+                if sem.confidence < WEAK_SEMANTIC:
+                    # weakly classified field ("family", "given", "client" alone): redact in place, but the
+                    # value is not confirmed PII, so it must never seed the run-wide index (P2)
+                    hits = [Hit(h.start, h.end, h.entity, h.confidence, "field_weak") for h in hits]
                 if self.index is not None:
                     hits = hits + self.index.match(text, channel)
                 return hits, []

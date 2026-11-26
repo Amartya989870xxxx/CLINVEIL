@@ -61,8 +61,9 @@ def _rebuild(node: Any, path: tuple[Any, ...], repl: dict[str, Any]) -> Any:
             out[nk] = _rebuild(v, p, repl)
         return out
     if isinstance(node, list):
-        rebuilt = [_rebuild(v, (*path, i), repl) for i, v in enumerate(node)]
-        return [v for v in rebuilt if v is not WITHHELD]
+        # array elements are never removed (lengths and positions are schema); the sanitiser substitutes
+        # a placeholder string for a withheld element, so the sentinel cannot reach this point
+        return [_rebuild(v, (*path, i), repl) for i, v in enumerate(node)]
     if isinstance(node, str) or (isinstance(node, int | float) and not isinstance(node, bool)):
         return repl.get(json_format.pointer(path), node)  # numbers holding PII are replaced too (type kept)
     return node

@@ -171,3 +171,15 @@ quarantine the file.
 over-redaction. `translit.name_key_strict` keeps vowel qualities and is the key Phase 3 must use, together
 with corroborating identifiers (D7), because a false merge corrupts two patients' records.
 
+## D28. Escaping symlinks are never opened; their path gets a declared placeholder (Phase 2.1)
+Reading a target outside the input root, even only to hash it and even under a size cap, lets an input
+tree make the process read arbitrary files (secrets, FIFOs, devices). The official contract, however,
+identifies inputs by the SHA-256 of the bytes behind the path, and `validate_output.py` fails a run in
+which an input path is neither exported nor declared. We therefore export an empty, content-free
+placeholder at the (filename-sanitised) path, declared `suppressed` with reason
+`symlink_outside_input` under a non-identifying synthetic id. The validator accepts this with one WARN.
+The one residual conflict is a link whose own filename holds PII: the placeholder is renamed and cannot be
+declared without the target's hash, so the validator reports one undeclared input. Privacy and no-read
+win over that error. All other reads open the verified real path with `O_NOFOLLOW | O_NONBLOCK` and require
+a regular file.
+

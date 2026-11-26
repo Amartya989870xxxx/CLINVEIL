@@ -26,7 +26,7 @@ Assumption from the problem statement: *"Assume your server will be breached one
 
 | Surface | Threat | Mitigation | Status |
 |---|---|---|---|
-| Input traversal | symlink to `/etc` or `~/.ssh` exported as a "sanitised" file | escaping symlinks quarantined, never parsed; target hashed only if a regular file within the size cap (2.1); broken symlinks reported as `broken_symlink` instead of silently dropped (2.1); symlinked dirs not traversed | ✅ P0 / 2.1 |
+| Input traversal | symlink to `/etc` or `~/.ssh` read, hashed or exported | escaping symlink targets are **never opened** (verified with an audit hook): the path gets an empty placeholder declared `suppressed` under a synthetic id; broken symlinks and FIFOs/devices reported unopened; every read resolves the real path, requires it inside the root, opens it `O_NOFOLLOW \| O_NONBLOCK` and checks `fstat` is a regular file; symlinked dirs not traversed | ✅ P0 / 2.1 |
 | Input size | memory exhaustion | `max_file_bytes` cap, streamed hashing | ✅ P0 |
 | Deep / huge JSON | `RecursionError`, memory blow-up | linear pre-parse depth scan (limit 64), size (64 MiB) and node (2M) limits, no raised recursion limit; quarantine with stable codes | ✅ P1 |
 | Extension spoofing | JSON behind `.csv` mangled as CSV | content-based detection: signatures, JSON-first, markup, delimiter sniffing | ✅ P1 |
@@ -66,9 +66,12 @@ Assumption from the problem statement: *"Assume your server will be breached one
 - In-memory PII (decoded text, evidence index) is not zeroed. Python cannot guarantee wiping.
 - The size cap is per file. A tree of many medium files could still approach the RSS budget (Phase 6
   scale test).
-- A symlink that escapes the root is still *hashed* for the report (read-only, streamed, only within the size
-  cap), because SPEC requires every input file to be listed by the SHA-256 of its bytes. We verified that
-  `validate_output.py` fails the release otherwise. Its content is never parsed or exported. The official
-  validator itself crashes on a dangling symlink in the input; CLINVEIL reports it as `broken_symlink`.
+- A symlink that escapes the root is never opened, so its SHA-256 cannot be reported. It is declared under a
+  synthetic id with an empty placeholder at its path, which `validate_output.py` accepts (one WARN). If the
+  link's own filename holds PII the placeholder is renamed and the validator reports one undeclared input:
+  privacy and no-read were preferred to that error (PHASE2_REMEDIATION.md §7, S1). The official validator
+  itself reads link targets (it blocks on a FIFO and crashes on a dangling link).
+- Hard links to files outside the root look like regular files and are read. Directory components swapped
+  for symlinks during a run are not defended against (the final component is, via `O_NOFOLLOW`).
 - Release privacy is measured only against the published attack suite. No finite synthetic attack
   proves anonymity.

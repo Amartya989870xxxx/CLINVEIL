@@ -42,18 +42,16 @@ from clinveil.export.release import (
     write_sanitized,
 )
 from clinveil.ingestion.detect import detect
-from clinveil.ingestion.discovery import discover, sha256_file
+from clinveil.ingestion.discovery import discover, read_input, sha256_input, unread_id
 from clinveil.ingestion.limits import IngestLimits
 from clinveil.models.records import RecordRef
-from clinveil.parsing.builder import build_document
+from clinveil.parsing.builder import build_document, build_placeholder
 from clinveil.privacy.pseudonym import Pseudonymizer
 from clinveil.sanitization.processors import RunStats, Sanitizer, sanitized_relpath
 from clinveil.security.errors import QuarantineError, safe_reason
 from clinveil.security.secrets import ReleaseSecret
 from clinveil.utils.resources import peak_rss_mb
 from clinveil.validation.contract import check_release
-
-_EMPTY_SHA = hashlib.sha256(b"").hexdigest()
 
 
 @dataclass(frozen=True)
@@ -99,18 +97,30 @@ def _run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Polic
         entry = FileEntry(input_sha256="")
         try:
             if f.broken:
-                entry.input_sha256 = _EMPTY_SHA  # nothing exists to read: the SHA-256 of zero bytes
+                entry.input_sha256 = unread_id(f)  # nothing exists to read
                 raise QuarantineError("broken_symlink")
+            if f.special:
+                entry.input_sha256 = unread_id(f)  # a FIFO/socket/device is never opened
+                raise QuarantineError("not_a_regular_file")
             if f.escapes_root:
-                # Never parsed, never exported. The official contract identifies every input by the
-                # SHA-256 of the bytes behind its path (validate_output follows the link), so a regular,
-                # size-capped target is stream-hashed; anything larger is not read at all.
-                entry.input_sha256 = sha256_file(f.path) if 0 <= f.size <= policy.max_file_bytes else _EMPTY_SHA
-                raise QuarantineError("symlink_outside_input")
+                # The target is NEVER opened (not even to hash it). The release keeps the path covered
+                # with an empty, content-free placeholder (filename PII still renamed), declared as
+                # "suppressed" under a non-identifying id: see PHASE2_REMEDIATION.md, S1.
+                entry.input_sha256 = unread_id(f)
+                doc = build_placeholder(f.rel, entry.input_sha256, f.path.suffix.lower())
+                analysis = engine.analyze(doc)
+                out_rel = sanitized_relpath(doc, analysis, reserved, taken)
+                renamed += out_rel != f.rel
+                result, _ = sanitizer.sanitize(doc, out_rel, analysis)
+                write_sanitized(sanitized_root, out_rel, result)
+                entry.output, entry.status, entry.reason = f"sanitized/{out_rel}", "suppressed", "symlink_outside_input"
+                files.append(entry)
+                input_shas.append(entry.input_sha256)
+                continue
             if f.size > policy.max_file_bytes:
-                entry.input_sha256 = sha256_file(f.path)
+                entry.input_sha256 = sha256_input(f.path, input_dir)
                 raise QuarantineError("file_too_large")
-            raw = f.path.read_bytes()
+            raw = read_input(f.path, input_dir, policy.max_file_bytes)
             entry.input_sha256 = hashlib.sha256(raw).hexdigest()
             detection = detect(raw, f.path.suffix.lower(), limits)  # raises QuarantineError for anything unsafe
             doc = build_document(f.rel, entry.input_sha256, len(raw), f.path.suffix.lower(), detection, limits)
@@ -144,7 +154,7 @@ def _run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Polic
     return RunSummary(
         files_total=len(files),
         files_sanitized=n_san,
-        files_quarantined=len(files) - n_san,
+        files_quarantined=report["counts"]["files_quarantined"],
         records=len(records),
         problems=tuple(check_release(output_dir, input_shas)),
     )
@@ -155,10 +165,10 @@ def _seed_index(input_dir: Path, policy: Policy, limits: IngestLimits) -> Sensit
     index = SensitiveValueIndex()
     seeder = DetectionEngine(None)
     for f in discover(input_dir):
-        if f.broken or f.escapes_root or f.size > policy.max_file_bytes:
+        if f.broken or f.special or f.escapes_root or f.size > policy.max_file_bytes:
             continue
         try:
-            raw = f.path.read_bytes()
+            raw = read_input(f.path, input_dir, policy.max_file_bytes)
             detection = detect(raw, f.path.suffix.lower(), limits)
             doc = build_document(
                 f.rel, hashlib.sha256(raw).hexdigest(), len(raw), f.path.suffix.lower(), detection, limits

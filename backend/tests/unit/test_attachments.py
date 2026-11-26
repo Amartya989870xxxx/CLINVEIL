@@ -82,7 +82,7 @@ def test_whole_value_with_line_breaks():
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",  # a SHA-256
         "TelmisartanHydrochlorothiazideCombination",
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh",
-        "urn:uuid:3e8b02cd-9e10-4da8-9053-d47573e43248",
+        "urn:uuid:0f4d2a9c-6b1e-4c3a-8d7f-2e9b5a1c7d40",
     ],
 )
 def test_non_payloads_are_not_misdetected(value):

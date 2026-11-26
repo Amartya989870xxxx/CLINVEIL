@@ -43,6 +43,7 @@ from clinveil.detection.lexicon import (
     SEVERITY_WORDS,
     SURNAMES,
 )
+from clinveil.detection.semantics import Sem, classify_label
 from clinveil.detection.text import Token, normalize_token, tokenize
 from clinveil.detection.translit import name_key
 from clinveil.models.findings import EntityType
@@ -249,6 +250,8 @@ def detect_names(text: str) -> tuple[list[Hit], list[KeepSpan]]:
     for m in PATIENT_LABEL_RE.finditer(text):
         if any(a <= m.start() < b for a, b in relative_labels):
             continue  # "नाम:" inside "पिता का नाम:" / "name:" inside "Father's name:"
+        if _qualified_non_person_label(text, m):
+            continue  # "Test Name:", "Drug Name:", "दवा का नाम:": the value is not a person
         conf = 0.85 if m.group().lower().startswith("report") else 0.92
         add(
             name_after(text, tokens, m.end(), allow_lower=not m.group().lower().startswith("report")),
@@ -332,6 +335,30 @@ def _gazetteer(text: str, tokens: list[Token]) -> Iterator[Hit]:
             yield Hit(a.start, b.end, P, 0.75, "gazetteer")
         elif a.key in GIVEN_NAMES and len(b.key) >= 3:
             yield Hit(a.start, b.end, P, 0.6, "gazetteer_weak")
+
+
+_BARE_NAME_LABEL = re.compile(r"(?i)\s*(?:name|naam|नाम)\s*[:：\-–]\s*$")
+_QUALIFIER_BEFORE = re.compile(r"([^\W\d_][\w\u0900-\u097f]*)(?:'s|’s)?[ \t]*(?:(?:का|की|के|ka|ki|ke)[ \t]+)?$")
+_PERSON_LABEL_SEMS = frozenset({Sem.PERSON_NAME, Sem.RELATIVE_NAME, Sem.UNKNOWN})
+
+
+def _qualified_non_person_label(text: str, m: re.Match[str]) -> bool:
+    """A bare ``Name:`` label whose preceding word makes it a non-person label (Phase 2.1, P1).
+
+    ``Test Name: Hemoglobin`` or ``Drug Name: Paracetamol`` would otherwise be read as a patient
+    label, and the clinical value would seed the run-wide index. The two-word label is classified
+    with the same classifier as column headers; anything that is not a person label (clinical,
+    organisation, place, doctor, staff, file path) disables the patient-label rule. An unknown
+    qualifier keeps it (recall first).
+    """
+    if not _BARE_NAME_LABEL.fullmatch(m.group()):
+        return False
+    start = max(text.rfind("\n", max(0, m.start() - 60), m.start()) + 1, m.start() - 60)  # bounded look-back
+    q = _QUALIFIER_BEFORE.search(text[start : m.start()])
+    if not q:
+        return False
+    sem = classify_label(f"{q.group(1)} name")
+    return sem.sem not in _PERSON_LABEL_SEMS or sem.evidence == "path"
 
 
 _RELATIVE_CONTEXT = re.compile(

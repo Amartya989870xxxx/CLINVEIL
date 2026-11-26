@@ -53,7 +53,7 @@ Classification vocabulary: **Confirmed and reproduced** · **Partially reproduce
 | D4 | assorted false positives; binary attachment quarantines a Bundle | Confirmed and reproduced (all eight sub-items) | fixed |
 | E1 | report counts unchanged values; generalised > processed | Confirmed and reproduced | fixed |
 | E2 | memo caches retain input fragments after a run | Confirmed (verified directly) | fixed |
-| E3 | escaping symlink targets hashed; broken symlinks dropped | Partially reproduced | partly fixed; hashing kept (contract-constrained, evidence below) |
+| E3 | escaping symlink targets hashed; broken symlinks dropped | Partially reproduced | fixed in the final verification (§7, S1): targets are never opened; one documented contract conflict remains |
 | E4 | quadratic resolution; double parse | Partially reproduced (resolver yes; end-to-end at 6k findings no) | resolver fixed; two-pass parse kept by design |
 | E5 | `RAKSHA_SECRET` unused | Confirmed | deferred to Phase 3/4 (by design) |
 | F1 | gazetteer depleted to 47 surnames | Confirmed | accepted (contamination removal), documented |
@@ -291,9 +291,18 @@ Paths are relative to `backend/src/clinveil/`. Tests are in `backend/tests/` (`R
   - **Schema keys:** `Blood Group` under `patient` stays a schema key, because the purity rule no longer
     lets `patient` + anything be a person.
   - **Binary attachments:** a binary FHIR attachment is **withheld** instead of quarantining the Bundle.
-    Its `data` member is removed (optional in FHIR R4); `contentType` and the rest stay. In text, a
-    binary payload becomes `[ATTACHMENT-WITHHELD]`. The count is reported as `attachments_withheld` in
-    `logs/detection_summary.json`.
+    The exact behaviour (after the final verification, §7 S2) is:
+    - **Object members** that are entirely a binary payload are removed: `Attachment.data`,
+      `Binary.data` and an undeclared binary `valueBase64Binary` (all 0..1 in R4). For a declared
+      attachment, `hash` and `size` are removed too. `contentType`, `title`, `url`, ids and references
+      stay.
+    - **Array elements** keep their slot as the string `"[ATTACHMENT-WITHHELD]"`, so lengths and
+      positions do not change.
+    - **Inside text**, the payload span is replaced the same way.
+    - **Text attachments** are decoded, cleaned and re-encoded, never withheld.
+    - **Invalid declared payloads** still quarantine the file.
+
+    The count is reported as `attachments_withheld` in `logs/detection_summary.json`.
 
 ### E1. Honest report counts
 - **Where:** `sanitization/processors.py` (`effective`, `RunStats.generalized_in`), `engine.analyze`.
@@ -312,25 +321,19 @@ Paths are relative to `backend/src/clinveil/`. Tests are in `backend/tests/` (`R
 - **Test:** `R::test_E2` (0 entries after `run()`).
 
 ### E3. Symlinks
-- **Where:** `ingestion/discovery.py`, `pipeline.py`, `security/errors.py`.
+- **Where:** `ingestion/discovery.py`, `pipeline.py`, `parsing/builder.py`, `export/release.py`.
 - **Reproduced:**
   - The escaping target's SHA-256 appears in `report.json`: yes.
   - The target was hashed before the size cap: yes (code).
   - Broken symlinks were silently skipped by `is_file()`: yes.
-- **Fix:**
-  - Broken symlinks are reported as quarantined `broken_symlink` (SHA-256 of zero bytes).
-  - An escaping target is stream-hashed only if it is a regular file within `max_file_bytes`;
-    otherwise it is not read at all.
-  - Targets are never parsed, exported or used for seeding.
-- **Why the hash stays:** the official contract identifies inputs by the SHA-256 of the bytes behind the
-  path. We verified it with the official validator on an escaping link:
-  - target hashed: `CONTRACT OK`;
-  - hash replaced: `ERROR 1 input files are neither exported (same path) nor declared in report.files`.
-
-  Dropping the hash would therefore fail validation. The hash reveals no content beyond what the contract
-  already exposes for every input file. Note also that `validate_output.py` itself crashes
-  (`FileNotFoundError`) on an input folder containing a dangling symlink. That is outside our control.
-- **Test:** `R::test_E3_escaping_and_broken_symlinks`.
+- **First fix (in `683074f`), superseded:** the target was still stream-hashed when it was a regular file
+  within the size cap. The final verification showed this still **opens the external target** (§7, S1).
+- **Final behaviour:** see §7, S1. The target is never opened; broken links and special files are
+  reported, not dropped.
+- **Tests:**
+  - `R::test_E3_escaping_and_broken_symlinks`;
+  - `security/test_symlink_no_dereference.py`;
+  - `security/test_channels_and_boundaries.py::test_symlink_escaping_input_is_never_read`.
 
 ### E4. Performance
 - **Where:** `detection/resolve.py`.
@@ -402,14 +405,128 @@ versions.
   - no PII surface appears as a whole word in `report.json`, `records.jsonl`, `logs/`, stdout/stderr or
     output paths;
   - the memo caches are empty after the run.
-- **Tests:** 695 passed, 1 xfailed (the pre-existing, documented Phase 3 xfail); `ruff check` and
-  `ruff format --check` are clean.
+- **Tests:** 711 passed, 1 xfailed after the final verification (§7) (the xfail is the pre-existing,
+  documented Phase 3 one); `ruff check` and `ruff format --check` are clean.
 
 ## 6. What is still open
 
 - Free-text names with **no cue at all** that never appear in a structured field (unchanged from Phase 2).
 - Hex and `\uXXXX`-encoded PII inside plain text; nested base64.
 - WhatsApp sender role (C5); phonetic-key collisions in the coarse key (by design, C4).
-- E3 target hashing (contract-constrained); E5 (Phase 3/4); F1 gazetteer size.
+- E3/S1 contract conflict for an escaping symlink whose **own filename** holds PII (§7); E5 (Phase 3/4);
+  F1 gazetteer size.
 - The adversarial generator, like `synth.py`, was written by the team that wrote the engine. It is
   broader and independent of the practice vocabulary, but it is not a substitute for the sealed dataset.
+
+## 7. Final security verification (after `683074f`)
+
+A second, independent pass checked the remediation itself before push. It found five issues. All are
+fixed in the follow-up commit and pinned by tests. Everything below was run, not inferred.
+
+### S1. Escaping symlink targets were still opened (fixed)
+- **Verified:** a Python audit hook recorded every `open` during a run. In `683074f`, `escape.txt` (a
+  link to a file outside the input root) **was opened**: the target was read to hash it. The size cap
+  only bounded how much was read.
+- **Fix:** every input read now goes through `ingestion/discovery.py::read_input` / `sha256_input`:
+  - the path is resolved and must lie inside the input root;
+  - the real path is opened with `O_NOFOLLOW | O_NONBLOCK`;
+  - `fstat` on the descriptor must show a regular file.
+
+  Discovery classifies entries with `lstat` and symlink resolution only (metadata, never content).
+- **Escaping link:** never opened, not even to hash it.
+  - The release covers its path with an **empty, content-free placeholder** (`{}` for `.json`). The
+    path still goes through filename detection and renaming.
+  - It is declared `status: "suppressed"`, `reason: "symlink_outside_input"`.
+  - Its id is a **non-identifying synthetic id** (`unread_id`: SHA-256 of the discovery ordinal),
+    because its bytes are never read.
+- **Broken link:** `quarantined` / `broken_symlink`, with a synthetic id.
+- **Internal link:** read through its verified real path and exported normally.
+- **Special files:** a FIFO, socket or device inside the root used to be dropped silently. It is now
+  `quarantined` / `not_a_regular_file` and never opened (S5).
+- **Verified with the audit hook:** links to an external regular file, to an external FIFO and to a
+  missing target are never opened. The run does not block on the FIFO.
+- **Official contract:**
+  - `validate_output.py` gives `CONTRACT OK` for a release with escaping and internal links. Its only
+    complaint is a WARN that the synthetic id matches no input file. Its silent-drop check is satisfied
+    because the path is exported.
+  - `files_quarantined` now counts only `quarantined` entries (a `suppressed` placeholder is neither
+    sanitised nor quarantined).
+- **Remaining conflict (documented, tested):** if an escaping link's **own filename** holds PII, the
+  placeholder is renamed. Without the target's SHA-256 the rename cannot be declared, so
+  `validate_output.py` reports exactly `ERROR 1 input files are neither exported (same path) nor
+  declared`. We chose privacy plus no-read over that one contract error:
+  `security/test_symlink_no_dereference.py::test_pii_named_escaping_link_trades_one_contract_error_for_privacy`.
+- **Out of our control:** the official validator itself reads link targets. It blocks forever on a link
+  to a FIFO and crashes on a dangling link.
+- **Not covered:** hard links to files outside the root are indistinguishable from regular files.
+  Directory components swapped for symlinks *during* a run (TOCTOU on intermediate directories) are not
+  defended against; the final component is (`O_NOFOLLOW`). The input copy is read-only by assumption.
+
+### S2. Binary withholding shrank JSON arrays and kept the image fingerprint (fixed)
+- **Verified:** in a non-FHIR JSON, `["<jpeg>", "keep me", "<pdf>"]` became `["keep me"]`, which shifts
+  positions and record locators. A withheld FHIR photo kept `Attachment.hash` (a SHA-1 of the image,
+  usable to confirm a known photo) and `size`.
+- **Fix:** array elements become `"[ATTACHMENT-WITHHELD]"` (the renderer no longer removes array
+  elements at all), and withholding a declared attachment's `data` also removes its `hash` and `size`.
+- **Verified FHIR structure** (`integration/test_attachment_withholding.py`):
+  - entry count, resource types and ids are unchanged, and references resolve;
+  - `Binary` keeps `contentType` (1..1);
+  - every remaining `data` is valid base64 with a `contentType`;
+  - the text attachment is cleaned and still valid base64.
+
+  The official FHIR scorer is sealed, so this is a structural check, not the organisers' R4 validator.
+
+### S3 (P1). `Test Name: Hemoglobin` seeded a clinical value as a patient (fixed; pre-existing in Phase 2)
+- **Verified:** a bare `Name:` label preceded by a clinical, organisation or file word seeded the value
+  into the run-wide index as a patient name:
+  - examples: `Test Name:`, `Drug Name:`, `Disease Name:`, `Hospital Name:`, `Organism Name:`,
+    `File Name:`, `दवा का नाम:`;
+  - values seeded: hemoglobin, paracetamol, typhoid, klebsiella, arogya…;
+  - the same values seed on `ac37504`.
+- **Fix:** the two-word label is classified with the header classifier. A non-person result disables
+  the patient-label rule; an unknown qualifier keeps it (recall).
+- **First fix was quadratic:** my first version searched from the line start for every label, making a
+  single-line note with 6,000 labels take minutes. The look-back is now bounded to 60 characters (E4
+  timing back to 6.0 s, the same as `683074f`).
+
+### S4 (P2). Weakly classified fields seeded the index (fixed; pre-existing in Phase 2)
+- **Verified:** keys such as `family`, `given`, `client` or `holder` alone (semantic confidence below
+  0.8) seeded their values ("Diabetes mellitus", "Insulin", "Walk-in", "Self"), because structured hits
+  had a 0.9 confidence floor whatever the semantic confidence.
+- **Fix:** such hits are still redacted in place but use the `field_weak` detector, which never seeds.
+
+### S5. Special files silently dropped (fixed)
+Covered under S1.
+
+### Privacy-accuracy verification (`regression/test_phase21_privacy_accuracy.py`)
+- Clinical free-text labels, clinical CSV columns, care-of and timeline lines, eponyms and weak fields
+  seed **nothing**.
+- Clinician names from CSV columns, `Consultant:` / `Doctor:` lines and FHIR `Practitioner` never enter
+  the index, and stay unredacted elsewhere.
+- None of these values propagate to another file. Confirmed patient names, phones and MRNs still
+  propagate (recall guard).
+
+### Git safety
+The whole Phase 2.1 diff against `ac37504` (3,400 added lines) was checked:
+- **No secrets** (key/token patterns).
+- **No organiser material tracked** (toolkit, truth file, attacker fixtures, outputs).
+- **No answer-key value:** practice name tokens, digit keys and exact keys all give 0 hits.
+- **Attacker fixtures:** 1,021 values checked; the only matches are schema words and the generic term
+  "typhoid fever".
+- **Verbatim practice input lines** (≥ 25 chars): only FHIR boilerplate (`"resourceType": …`,
+  `"system": "http://loinc.org"`) plus one practice **resource UUID** in a test. It is not PII, but it is
+  practice data, so it was replaced by an invented UUID. The same UUID is also in the published Phase 1
+  test `unit/test_attachments.py` (in pushed history, which is not rewritten); it is replaced there going
+  forward too.
+- The audit report stays untracked.
+
+### Re-measured after the fixes
+- **Official tools:**
+  - `validate_output.py`: CONTRACT OK;
+  - `check_dev.py`: 0/3230 leaked, 0/4 canaries, 4855/4855 probes, 0 raw copies;
+  - `check_submission.py --run`: READY, with the known E5 warning only.
+- **Practice output** is still byte-identical to Phase 2.
+- **Same-secret determinism** holds, and the input tree is unchanged.
+- **Side channels:** `TMPDIR` stays empty. No whole-word PII surface or key appears in the report,
+  `records.jsonl`, logs, stdout/stderr or output paths. The memo caches are empty after a run.
+- **Performance:** 2.1 s / 32 MB for 200 files; 20.2 s / 39 MB for 2,000 files.
