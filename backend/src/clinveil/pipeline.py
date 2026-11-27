@@ -83,7 +83,9 @@ def _run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Polic
 
     stats = RunStats()
     pseudonymizer = Pseudonymizer(secret, policy.date_shift_max_days)
-    sanitizer = Sanitizer(pseudonymizer, stats)
+    sanitizer = Sanitizer(
+        pseudonymizer, stats, age_band_years=policy.age_band_years, min_group_size=policy.min_group_size
+    )
     index, evidence = _pass1_collect(input_dir, policy, limits)
     link_result = resolve_identities(evidence, pseudonymizer)
     del evidence  # raw identity evidence never outlives resolution

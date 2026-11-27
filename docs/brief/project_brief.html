@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CLINVEIL: Project Brief (Team APEX)</title>
+<style>
+  @page { size: A4; margin: 13mm 14mm 12mm 14mm; }
+  body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 10pt; line-height: 1.32; color: #111; margin: 0; }
+  h1 { font-size: 16pt; margin: 0 0 2px 0; }
+  h2 { font-size: 11.5pt; margin: 9px 0 3px 0; border-bottom: 1px solid #999; padding-bottom: 1px; }
+  p { margin: 3px 0; }
+  ul { margin: 2px 0 2px 16px; padding: 0; }
+  li { margin: 1px 0; }
+  .meta { font-size: 10pt; color: #333; margin-bottom: 4px; }
+  pre { font-family: Menlo, Consolas, monospace; font-size: 8.6pt; line-height: 1.22; background: #f4f4f4; padding: 5px 6px; margin: 4px 0; white-space: pre; }
+  table { border-collapse: collapse; width: 100%; font-size: 9.6pt; margin: 3px 0; }
+  th, td { border: 1px solid #bbb; padding: 2px 5px; text-align: left; vertical-align: top; }
+  th { background: #eee; }
+  .page { page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
+  .tag { font-weight: bold; }
+  .no { color: #8a1c1c; font-weight: bold; }
+  .ok { color: #1b5e20; font-weight: bold; }
+</style>
+</head>
+<body>
+<div class="page">
+<h1>CLINVEIL: an offline privacy firewall for messy, multilingual Indian hospital exports</h1>
+<div class="meta"><b>Team APEX</b> · Track 3 · Secret Wards (Yugaantar DevForge) · Repo: github.com/Amartya989870xxxx/CLINVEIL</div>
+
+<h2>1. In one paragraph</h2>
+<p>CLINVEIL takes a folder of real-world hospital exports and writes a sanitised release: every personal
+identifier is removed from every place it hides, clinical values stay exactly intact, and every real patient gets one
+stable keyed pseudonym across files, hospitals and scripts. <b>The core idea:</b> an identifier has an <i>owner</i>.
+A father's Aadhaar in a child's note, or a guardian's hospital in a referral, is evidence <i>about a relative</i>. It is
+used only to veto a link, never to make one. Linking is set-based and abstains when evidence conflicts, because a
+wrong merge harms patients more than a missed one.</p>
+
+<h2>2. Architecture</h2>
+<pre> {input}/ (read-only)                evaluator sandbox: no network, 2 CPU, 4 GB, 15 min
+   │
+   ▼
+ ingestion ─► parsing ─► detection ─► linking ─► privacy ─► sanitisation ─► export ─► self-check
+ discover     CSV/TSV    6 channels   owner-aware HMAC      per-format      report     contract
+ guard        JSON/FHIR  typed,       evidence,   pseudonyms structure-     records    validated
+ decode       text, b64  offset-only  set-based   (keyed)    preserving     .jsonl     before exit 0
+                         findings     clusters
+                                                                     ─► {output}/sanitized/ + report.json + records.jsonl
+ RAKSHA_SECRET (environment only) ─► HMAC keys; never written, logged or repr'd</pre>
+
+<h2>3. How each part works</h2>
+<ul>
+<li><span class="tag">Ingestion:</span> deterministic discovery; symlinks that escape the input are never opened; size,
+depth and node limits; content sniffing (signatures, JSON-first, delimiters); UTF-8/BOM/UTF-16 (incl. BOM-less)/cp1252 with
+mojibake and binary checks. Broken, unsupported or over-limit files are <b>quarantined</b>, never copied raw.</li>
+<li><span class="tag">Parsing:</span> one intermediate representation for CSV, TSV, JSON, FHIR R4 Bundles, plain text and declared or
+embedded base64 payloads. Every value carries its address, record and <b>channel</b>.</li>
+<li><span class="tag">Detection, six channels:</span> <i>content, header, key, metadata, base64, filename</i>. The layers are:
+column semantics (renamed and Hindi labels); validated Indian identifiers (Verhoeff Aadhaar, ABHA, PAN, MRN/UHID with dose guards);
+contextual Latin, Devanagari and Hinglish names and relatives; address components with gazetteers and transliteration;
+clinical and doctor protection (meaning traps); and run-wide propagation of confirmed values into notes, filenames, keys,
+headers, metadata and base64.</li>
+<li><span class="tag">Linkage:</span> typed evidence per record (global IDs, hospital-scoped MRNs, names via strict
+transliteration keys, DOB, phone, relatives, village), each with its owner. Confidence tiers: a validated global ID; a verified
+same-hospital MRN; a corroborated full name. Clusters form by complete linkage within each edge group. Ambiguous bridges and groups
+over 256 abstain and are frozen. Two different UHIDs from one issuer block a link unless the documented re-registration
+evidence is present.</li>
+<li><span class="tag">Pseudonyms:</span> domain-separated, versioned HMAC-SHA256 of a patient key. With a different secret the
+outputs cannot be linked. No plaintext mapping is ever persisted.</li>
+<li><span class="tag">Sanitisation:</span> typed placeholders (<code>[NAME]</code>, <code>[MRN]</code>…); PII numbers become
+<code>0</code> (type kept); FHIR <code>birthDate</code> keeps the year only; payloads are re-encoded; binary attachments are
+withheld; FHIR references are rewritten consistently; PII-bearing paths are renamed.</li>
+</ul>
+
+<h2>4. USP</h2>
+<ul>
+<li><b>Ownership-aware identity:</b> relative-owned IDs, ages, genders and facilities can veto a link but never create one.
+This also holds inside XHTML narratives (tables, definition lists, paragraphs).</li>
+<li><b>Cross-script, conservative linking:</b> one patient as Latin, Devanagari and Hinglish is linked through strict
+transliteration keys plus corroboration. Homonyms, household phones and shared visit numbers do not merge people.</li>
+<li><b>No raw copies, no side channels:</b> secret only in memory, PII-free reason codes in logs, no temp files written,
+and an in-process contract check before exit 0.</li>
+</ul>
+
+<h2>5. Security design</h2>
+<p>Assume a breach: the release contains no direct identifiers and no mapping table. The key lives only in the
+<code>RAKSHA_SECRET</code> environment variable (an unprintable object, never logged). Logs carry reason codes, not
+values. The process writes no temporary files, so there is nothing to clean up or leak from <code>TMPDIR</code>; there is
+therefore also no encryption at rest. Input files are never modified (verified by hash before and after).
+Engine dependencies: none beyond the Python standard library; no network, no LLM.</p>
+</div>
+
+<div class="page">
+<h2>6. Privacy layer: what the submitted code applies</h2>
+<table>
+<tr><th>Transformation</th><th>Status (implemented, integrated, tested)</th></tr>
+<tr><td>Direct identifiers (names, relatives, Aadhaar, ABHA, PAN, MRN, phone, e-mail, insurance)</td><td class="ok">Applied: typed placeholders in all six channels</td></tr>
+<tr><td>Per-patient date shift (secret offset, |shift| &le; 180 days, never 0)</td><td><span class="ok">Applied</span> to structured date fields (CSV, TSV, JSON, nested JSON, FHIR <code>period</code>/<code>effectiveDateTime</code>/<code>authoredOn</code>…), date-named keys and full dates inside free text (notes, narratives), keeping notation, time and zone. Linked patient: one HMAC offset across all files, so intervals and length of stay are exact. Unlinked record: its own keyed offset, never shared. Day/month order is inferred per document (one source is month-first); <b>ambiguous dates with no order evidence are suppressed as <code>[DATE]</code></b>, never guessed or kept (33 on practice). Export/audit timestamps (<code>lastUpdated</code>, <code>generated_at</code>) are not shifted.</td></tr>
+<tr><td>Age (policy <code>age_band_years: 5</code>)</td><td><span class="ok">Applied</span> to structured ages and age/sex values: <code>47</code> &rarr; <code>45-49</code>, <code>73/F</code> &rarr; <code>70-74/F</code> (the band always contains the age). <span class="no">Not banded:</span> JSON numeric ages (to keep the value type; a numeric band bound would be untruthful), ages inside free text, and non-year ages (&ldquo;6 months&rdquo;).</td></tr>
+<tr><td>DOB</td><td><span class="ok">Applied:</span> removed in text and fields (<code>[DOB]</code>); FHIR <code>birthDate</code> keeps the year only. Consistent with banded ages.</td></tr>
+<tr><td>PIN (planned 3-digit prefix)</td><td><span class="ok">Applied:</span> <code>226010</code> &rarr; <code>226XXX</code> in structured and text fields, only where the rare-cell rule allows. Otherwise <code>[PIN]</code>. Filenames and base64 always <code>[PIN]</code>.</td></tr>
+<tr><td>Rare-cell protection (policy <code>min_group_size: 5</code>)</td><td><span class="ok">Applied to the PIN prefix:</span> a record keeps its prefix only if at least 5 records of the same document share (age band, gender, PIN prefix). Missing values count as their own value, so small files are fully suppressed. On practice data only 5 of 136 PINs keep a prefix. <span class="no">This is not formal k-anonymity</span>: other quasi-identifiers are not suppressed, and the scope is one document.</td></tr>
+<tr><td>Village &rarr; tehsil/district</td><td><span class="no">Not implemented:</span> no offline mapping exists in the repo (none invented). Villages, houses, localities and landmarks stay fully suppressed; tehsil/district/state fields are kept.</td></tr>
+</table>
+<p><b>Trade-off.</b> Clinical values are untouched and date intervals are exact. We give up exact visit dates, exact ages and full PINs
+(the utility scorer credits a 5-year band at 0.9 and a true PIN prefix at 0.7) to resist visit-date and register-linkage attacks.
+Where no truthful generalisation exists (village), we suppress rather than invent.</p>
+
+<h2>7. Measured results (practice data, development measurements, not an official score)</h2>
+<table>
+<tr><th>Measure</th><th>Value</th></tr>
+<tr><td>Personal data still visible (practice self-check, before Phase 4)</td><td>0 of 3230 (0.0%); Latin, Devanagari, Hinglish 0.0%; all six hiding places 0.0%. After Phase 4: 0 of 22 distinct PINs, 0 of 78 DOBs and 0 of 47 villages visible in content or filenames (own scan)</td></tr>
+<tr><td>Medical values kept</td><td>4855 of 4855 (100%)</td></tr>
+<tr><td>Linking precision / recall / F0.5</td><td>1.00 / 0.97 / 0.99. Pairwise TP 6706, FP 0, FN 186; 0 pseudonyms that merge different people</td></tr>
+<tr><td>Raw copies of broken files</td><td>0 (200 files: 193 sanitised, 7 quarantined, 822 records)</td></tr>
+<tr><td>Official validators</td><td><code>validate_output.py</code>: CONTRACT OK; <code>check_submission.py --run</code>: READY TO SUBMIT</td></tr>
+<tr><td>Determinism / unlinkability</td><td>Same secret: identical outputs (except timing fields). Different secret: 53 vs 53 pseudonyms, 0 shared; date shifts differ</td></tr>
+<tr><td>FHIR</td><td>19 Bundles, 459 references, 0 unresolved after sanitisation</td></tr>
+<tr><td>Tests</td><td>1125 automated tests pass on Python 3.10, 3.12 and 3.13 (incl. 61 Phase 4 tests; synthetic, invented identities)</td></tr>
+<tr><td>Run time / peak memory</td><td>With Phase 4: 2.66 s, 41 MiB (200 files). Before Phase 4, 10× (2,000 files): 28.1 s, 191 MiB. Apple M4 Pro, single process; the 2-CPU/4 GB limit was not enforced in the measurement</td></tr>
+<tr><td>Re-identification risk (own estimate)</td><td>Not measured: quasi-identifier uniqueness is not yet computed</td></tr>
+</table>
+<p><b>On data we did not tune on:</b> identity rules are proven with 1064 synthetic regression and adversarial tests. These
+use invented names, renamed columns, new formats, homonyms, household identifiers, cross-script spellings and XHTML
+narratives; practice values never appear in code or tests. Each audit round reproduced a finding as a failing test before
+fixing it. Hidden-dataset performance is unknown.</p>
+
+<h2>8. Assurance</h2>
+<p>The identity-resolution layer (Phase 3) went through repeated independent security audits. Each finding was reproduced, fixed
+and given permanent tests. The latest targeted audit (Phase 3.3 Pass 4: XHTML relative ownership, and distinct-UHID
+enforcement against shared visit numbers) was approved. That approval covers those findings only, not the whole system.</p>
+
+<h2>9. Known limitations (honest)</h2>
+<ul>
+<li><b>Privacy layer partial:</b> ambiguous day/month dates without order evidence are suppressed (utility cost); audit timestamps stay unshifted; JSON numeric and free-text ages are not banded; no village&rarr;tehsil/district generalisation; rare-cell protection covers the PIN prefix only, per document; not formal k-anonymity. Phase 4 has not been independently audited.</li>
+<li><b>OBS-1, multi-block relative ownership:</b> in a narrative laid out as "Father" → name in one block → age and Aadhaar in a
+later block, the relative's values can fall outside the ownership context window and be attributed to the patient. This
+is unresolved and can cause a false merge in affected layouts.</li>
+<li><b>OBS-2:</b> a Devanagari danda (।) next to a gender word can reduce gender recall in free text.</li>
+<li>Free-text demographics with an ambiguous owner are dropped (precision over recall). The relative-name veto ignores
+relation type, so some same-patient records stay split.</li>
+<li>Kinship and facility detection is word-list based. Hex encodings inside plain text are not decoded.</li>
+</ul>
+</div>
+</body>
+</html>

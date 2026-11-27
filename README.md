@@ -10,15 +10,16 @@ re-identification by an attacker holding a voter-roll-style register.
 Built by team **APEX** for **Yugaantar DevForge · Track 3 · Secret Wards**. All data handled in development and
 demonstration is **synthetic**. No real patient data is used or permitted anywhere in this project.
 
-> **Status: Phase 2 (multilingual, context-aware PII detection).** Layered detection over the Phase 1
-> representation: semantic field classification (renamed and Hindi labels), validated Indian identifiers,
-> contextual Latin/Devanagari/Hinglish names and relatives, address components, clinical and doctor
-> protection, and run-wide propagation of confirmed values into notes, filenames, keys, headers, metadata and
-> base64 payloads. On the practice data, `check_dev.py` shows 0/3230 PII visible, 0/4 canaries and 4855/4855
-> medical values kept. These are development measurements, not an official score. **Not yet done:** patient
-> linking (Phase 3) and quasi-identifier generalisation (Phase 4).
-> Measured: [Phase 0](docs/evaluation/BASELINE.md) · [Phase 1](docs/evaluation/PHASE1_INGESTION.md) ·
-> [Phase 2](docs/evaluation/PHASE2_DETECTION.md).
+> **Status: Phases 1–3 complete; Phase 4 partially implemented (uncommitted at time of writing).** Six-channel multilingual
+> detection (content, header, key, metadata, base64, filename), owner-aware identity resolution with keyed HMAC pseudonyms
+> (Phase 3, `9243167`). **Phase 4 (implemented, integrated and tested; not independently audited):** per-patient keyed date
+> shift of structured, date-named and free-text dates (CSV/TSV/JSON/FHIR/text; unlinked records get their own record-level
+> offset; ambiguous day/month dates without document evidence become `[DATE]`); 5-year bands for structured and `73/F` ages; PIN to a true 3-digit prefix (`226XXX`) only where at least 5 records of the document share (age band,
+> gender, PIN prefix), else `[PIN]`. **Not implemented:** village to tehsil/district (no offline mapping), banding of JSON
+> numeric or free-text ages, formal k-anonymity. On the practice data: CONTRACT OK, READY TO SUBMIT, linking P 1.00 / R 0.97 with 0 wrong merges,
+> 1125 tests pass on Python 3.10/3.12/3.13. These are development measurements, not an official score. Known limitations
+> OBS-1/OBS-2: [docs/PROJECT_HANDOFF.md](docs/PROJECT_HANDOFF.md). Project Brief:
+> [docs/brief/CLINVEIL_Project_Brief.pdf](docs/brief/CLINVEIL_Project_Brief.pdf).
 > Roadmap: [docs/architecture/IMPLEMENTATION_PLAN.md](docs/architecture/IMPLEMENTATION_PLAN.md).
 
 ## The challenge
@@ -51,8 +52,8 @@ Full design: [docs/architecture/SYSTEM_ARCHITECTURE.md](docs/architecture/SYSTEM
 | Ingestion | `clinveil.ingestion` | deterministic discovery, symlink and size guards; content-based detection (signatures, JSON-first, markup, delimiter sniffing); UTF-8/BOM/UTF-16 (incl. BOM-less)/cp1252 with mojibake and binary checks |
 | Parsing | `clinveil.parsing` | common IR (`Document`/`Field`: address, path, record, channel, kind, label); bounded JSON (depth 64, size, nodes); FHIR roles, entries and reference resolution; declared and embedded base64 payloads |
 | Detection | `clinveil.detection` | semantics, validated identifiers, contextual names, addresses, clinical protection, value-index propagation; typed offset-only `Finding`s |
-| Linking | `clinveil.linking` | interface only, links nothing (safe: a wrong link costs more than none) |
-| Privacy | `clinveil.privacy` | HMAC pseudonyms, per-patient date shift, age bands (helpers, not yet applied) |
+| Linking | `clinveil.linking` | owner-aware typed evidence, set-based complete-linkage clusters, abstention on conflicts, R7 distinct-UHID veto |
+| Privacy | `clinveil.privacy` | HMAC pseudonyms; per-patient date shift, 5-year age bands, PIN prefix with rare-cell suppression (`privacy/transform.py`, applied in sanitisation) |
 | Sanitisation | `clinveil.sanitization` | findings → typed placeholders; numbers → 0; FHIR birthDate → year; payloads re-encoded; PII paths renamed |
 | Export | `clinveil.export` | `report.json`, `records.jsonl`, contained writes |
 | Security | `clinveil.security` | unprintable secret, PII-free reason codes, path containment |

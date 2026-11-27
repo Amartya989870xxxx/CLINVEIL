@@ -552,7 +552,38 @@ Backend paths are under `backend/src/clinveil/`. Package size at time of writing
   - Practice data contains none of these adversarial patterns; the hidden dataset is untested.
 - **Status:** IMPLEMENTATION COMPLETE in the working tree. **NOT committed, NOT pushed, NOT merged, and NOT independently approved. Final independent approval pending.**
 
-### Phase 4: Privacy transformations 📋 not started
+### Phase 4: Privacy transformations 🟡 partially implemented (2026-11-27 09:20–09:25 IST; uncommitted; NOT independently audited)
+- **Implemented, integrated in `Sanitizer` and tested (`tests/regression/test_phase4_privacy_transforms.py`, 45 tests):**
+  - `privacy/transform.py::shift_date_text`: structured `Sem.DATE` fields (CSV/TSV cells, JSON strings, FHIR dateTime) are shifted with
+    `Pseudonymizer.date_shift_days`. Key `psn|<pseudonym>` for linked records (one offset per patient across files) and
+    `rec|<file>|<loc>` for unlinked records (never a shared default). Notation, time and zone are kept; invalid or partial dates are
+    unchanged; day-first numeric dates are assumed (Indian convention).
+  - `band_age_text`: structured `Sem.AGE` strings become 5-year bands (`policy.age_band_years`); non-year ages, JSON numbers and
+    `73/F` are unchanged.
+  - `pin_prefix` + `Sanitizer._rare_pin_records`: a PIN finding becomes `NNNXXX` only if at least `policy.min_group_size` records of the
+    document share (age band, gender, PIN prefix); otherwise `[PIN]`. Filenames and base64 are always `[PIN]`.
+- **Verified:**
+  - 1109 tests on Python 3.13.7 / 3.10.20 / 3.12.13; ruff clean.
+  - CONTRACT OK and READY TO SUBMIT.
+  - Linkage TP 6706 / FP 0 / FN 186 unchanged.
+  - Same-secret determinism holds; different secrets give 0 shared pseudonyms and different shifts.
+  - Input unchanged; 0 temp files; secret absent from output.
+  - 19 FHIR Bundles, 459 references, 0 unresolved.
+  - 0 of 22 distinct practice PINs and 0 of 78 distinct practice DOBs visible in the output (own scan, no canaries).
+  - 2.61 s / 42 MiB on practice.
+  - `check_dev.py` was not run (it contains canary checks).
+- **Not implemented:**
+  - date shift inside free text;
+  - village→tehsil/district (no offline mapping in the repo; none invented);
+  - rare-cell suppression beyond the PIN prefix, and beyond one document. Not formal k-anonymity.
+- **2026-11-27 status (Claude Code, Opus 5.5):** with ~45 minutes left before the 10:00 IST deadline, NO Phase 4 transformation was
+  implemented. The keyed helpers `privacy/pseudonym.py::date_shift_days/shift_date` and `privacy/generalize.py::age_band` exist but are
+  not called by the pipeline. No offline village→tehsil/district mapping exists in the repo (none invented). `min_group_size: 5` is
+  configured but not enforced; no k-anonymity is claimed. Village/PIN/house/locality/landmark are suppressed with typed placeholders;
+  text DOB → `[DOB]`; FHIR `birthDate` → year.
+- **Residual Phase 3 limitations (documented, unresolved):** OBS-1 multi-block relative ownership ("Father" → name in one block →
+  age/Aadhaar in a later block can exceed the ownership window and be attributed to the patient; possible false merge). OBS-2:
+  Devanagari danda (।) next to a gender word can reduce free-text gender recall.
 - **Exists today:** `privacy/generalize.py::age_band()` only; `config/policy.yaml` carries `age_band_years`,
   `date_shift_max_days`, `min_group_size`.
 - **Planned (not done):** per-patient keyed date shift (intervals and length-of-stay preserved), truthful age bands,
@@ -560,6 +591,39 @@ Backend paths are under `backend/src/clinveil/`. Package size at time of writing
   (FHIR `birthDate` → year only).
 
 ### Phase 5: Secure export and final validation 🟡 partial
+- **Phase 4 completion pass (09:26–09:36 IST, Claude Code; uncommitted; NOT independently audited):**
+  - **Date order:** inferred per document from unambiguous numeric dates (DATASET.md documents one month-first system). With no
+    evidence, every date whose day and month are both <= 12 is SUPPRESSED as `[DATE]`; the order is never guessed and the exact date
+    is never kept (09:40 pre-commit correction: 33 suppressions on practice, `visit_date` 102/102 handled).
+  - **Free-text dates:** full dates in TEXT fields and free-text columns/strings (ISO, numeric with a 4-digit year, day-monthname-year)
+    are shifted with the record's offset.
+  - **Date-named fields:** keys or labels naming a date with a whole-date value are shifted (`date`, `visit_date`, `Sample Date`).
+    Birth, export, update and created timestamps are excluded.
+  - **Ages:** `73/F` age/sex values → `70-74/F`.
+  - **Tried and reverted:** JSON numeric age banding. It broke the Phase 2 type-preservation test
+    (`test_json_structure_and_types_preserved_except_renamed_pii_keys`), which was NOT weakened.
+  - **Practice JSON/FHIR date keys:** `date` 163/163, `effectiveDateTime` 129/129, `authoredOn` 59/59, `recordedDate` 34/34,
+    `start`/`end` 19/19 and `visit_date` 98/102 are shifted (4 abstained). `lastUpdated`/`generated_at` are deliberately unchanged.
+  - **Verified:**
+    - 1125 tests on 3.13.7 / 3.10.20 / 3.12.13 (after the `[DATE]` correction); ruff clean; CONTRACT OK; READY TO SUBMIT; linkage TP 6706 / FP 0 / FN 186;
+    - same-secret outputs fully identical; different secret: 0 shared pseudonyms, same partition;
+    - input unchanged; 0 temp files; 0 secret hits;
+    - 19 FHIR Bundles, 459 references, 0 unresolved;
+    - 0/22 PINs, 0/78 DOBs, 0/47 villages from the practice key visible in content or filenames;
+    - 2.64 s / 42 MiB (Apple M4 Pro; the 2-CPU/4 GB limit was not enforced).
+- **Six-channel matrix (from `docs/architecture/SYSTEM_ARCHITECTURE.md`; formats CSV/TSV/JSON/FHIR/text; Latin, Devanagari, Hinglish):**
+
+  | Channel | Responsibility | Transformation | Main risk |
+  |---|---|---|---|
+  | content | cell, JSON string and number, text and narrative values | placeholders, PSN slot, Phase 4 date, age and PIN | free-text ownership (OBS-1), ambiguous dates |
+  | header | CSV/TSV header cells | placeholder, de-duplicated (`[NAME] #2`) | unusual header PII |
+  | key | JSON member names | renamed PII keys | dynamic key maps |
+  | metadata | export metadata / FHIR `meta` | placeholders; audit timestamps kept | audit timestamps unshifted |
+  | base64 | decoded text payloads | re-encoded after placeholders (PIN always `[PIN]`, dates unshifted); binary withheld | dates inside payloads not shifted |
+  | filename | file and path names | renamed with bare words | none measured on practice |
+
+- **2026-11-27:** mandatory 2-page Project Brief created: `docs/brief/CLINVEIL_Project_Brief.pdf` (source `docs/brief/project_brief.html`,
+  rendered with headless Chrome; 2 A4 pages; measured numbers only; team member names NOT filled in, as they are not recorded in the repo).
 - **Done:** report/records writers, filename renaming declared by SHA-256, honest counts, pre-exit contract check,
   FHIR reference rewriting, binary-attachment withholding, side-channel scans in tests.
 - **Planned:** FHIR R4 structural validator of our own (organiser's FHIR scorer is sealed), final side-channel
@@ -747,6 +811,8 @@ Keep numbers traceable to a command you ran. A commit cannot contain its own has
 
 | Date | Agent | Entry |
 |---|---|---|
+| 2026-11-27 | Claude Code (Opus 5.5) | Phase 4 implementation (09:17–09:25 IST, uncommitted): new `privacy/transform.py`; `sanitization/processors.py` applies the per-patient/per-record date shift, 5-year age bands and PIN prefix with per-document rare-cell suppression; `pipeline.py` passes policy. New `test_phase4_privacy_transforms.py` (45 tests). 1109 tests pass on 3.13/3.10/3.12; ruff clean; CONTRACT OK; READY TO SUBMIT; linkage unchanged. Brief/README updated. Not independently audited. |
+| 2026-11-27 | Claude Code (Opus 5.5) | Phase 4/5 session started 09:13 IST, 47 minutes before the 10:00 IST deadline (organisers freeze the last commit at the deadline). Created the 2-page Project Brief `docs/brief/CLINVEIL_Project_Brief.pdf` (+ HTML source), updated README status (it still said Phase 2) and this file. No Phase 4 transformation implemented (not enough time to implement and verify safely); documented OBS-1/OBS-2. No source code changed. NOT committed/pushed (per the brief; the user must commit before the deadline for it to count). |
 | 2026-11-27 | Claude Code (Opus 5.5) | Phase 3.3 Pass 4 security remediation (uncommitted working tree on `4ecc67c`, Pass 1–3 preserved). `P33-PASS3-F1`: `_build_owner_view` renders each XHTML tag run as one separator (cell/term join = space, block = newline, new section = hard boundary), so `</td><td>`, `</dt><dd>`, `</p><p>` no longer cut a relative label off from the relative's age/Aadhaar; Devanagari gender word ends fixed (`महिला`, `स्त्री`, `पुत्री`). `P33-PASS3-F2`: R7 (distinct same-issuer UHIDs, re-registration exception) checked before Tier 2a in `compare_profiles`, enforced in `weak_path_conflicts`, and applied to strong resolver paths that need a verified local ID (`strong_pair_conflicts(via_local_id=True)`); global-ID precedence kept. Files: `linking/{extract,normalize,matcher,cluster}.py`, new `test_phase33_pass4_remediation.py` (51 tests: 37 fail on the pre-fix snapshot, 51 pass now), `ruff format` of `test_phase33_pass2_remediation.py` (trailing blank line only). `pytest` 1064 passed on 3.13.7 / 3.10.20 / 3.12.13; ruff check/format exit 0 (104 files); CONTRACT OK; READY TO SUBMIT; TP 6706 / FP 0 / FN 186 (unchanged); `check_dev.py` not run (canary checks excluded by the brief). **NOT committed/pushed/merged; final independent approval pending.** |
 | 2026-11-27 | Claude Code (Opus 5.5) | Phase 3.3 Pass 3 targeted remediation of the Carbon Phase 3.3 audit findings `P33-F1`–`F5` (uncommitted working tree on `4ecc67c`, Pass 1/2 preserved). F1: weak-only paths inside identifier groups use `weak_path_conflicts` on strong sub-component profiles (homonym, R7, complete-linkage vetoes), so a partial record cannot bridge homonyms. F2: free-text/FHIR-narrative ages and genders only when patient-owned. F3: relative-owned facility containers ignored. F4: bare initials keep their written vowel (`initial_key`). F5: oversized and wholly abstaining groups are frozen. Files: `linking/{cluster,matcher,extract,normalize}.py`, new `test_phase33_pass3_remediation.py` (66 tests: 46 fail on the pre-fix snapshot, 66 pass now). `pytest` 1013 passed on 3.13.7 / 3.10.20 / 3.12.13; ruff exit 0; CONTRACT OK; `check_dev` P 1.00 / R 0.97, 0 wrongly merged; TP 6706 / FP 0 / FN 186 (unchanged); READY TO SUBMIT. A first F1 variant (plain `compare_profiles` between lone members) was measured at recall 0.92 and replaced. **NOT committed/pushed/merged; final independent audit pending.** |
 | 2026-11-27 | Claude Code (Opus 5.5) | Phase 3.3 Pass 2 final remediation (uncommitted working tree on `4ecc67c`, preserving Gemini Pass 1 and the interrupted Antigravity session as found). Fixed `PASS1-NEW-5` (issuer prefix for reliable scopes), `PASS1-NEW-6` (set-based group resolver: complete linkage, bridge abstention frozen across stages, C2 co-attachment conflicts, `conflict_name_fragment`), `PASS1-NEW-7` / `NEW-5` (document-scope reliability per record, nested facility paths, aggregator/referral exclusion, multi-facility ambiguity), `NEW-6A` (locator-driven contract parsing), `NEW-6B` (full `has_any_evidence`, partial FHIR Patients), `NEW-7A` (E/O initials, kept vowel initials), `NEW-7B` (multiple ABHA addresses). New `test_phase33_pass2_remediation.py` (62 tests): 40 fail on a rebuild of the Pass 1 code, 62 pass now. `pytest` 947 passed on 3.13.7 / 3.10.20 / 3.12.13; ruff exit 0; CONTRACT OK; `check_dev` P 1.00 / R 0.97, 0 wrongly merged; READY TO SUBMIT. Carbon audit and Gemini Pass 1 report files not found in the repo. **NOT committed/pushed/merged; Carbon independent approval pending.** |
