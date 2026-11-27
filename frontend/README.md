@@ -1,61 +1,84 @@
-# CLINVEIL frontend (research dashboard)
+# CLINVEIL frontend
 
-**Status:** placeholder. Architecture and contracts only; no build tooling yet.
-**Never on the evaluator path.** The CLI works without this directory.
+A research and judge interface that explains and evidences what a CLINVEIL release did. **Optional and never on
+the evaluator path:** the offline CLI (`python main.py --input … --output …`) does not need this directory.
 
-## Responsibilities
+Status: a standalone **landing page** at `/` (no run data, no controls) and an **eight-screen workspace** from
+`/overview` (Overview, Process Dataset, Processing Run, Results, Privacy & Quality, Data
+Preview, Architecture, About & Limitations). Not yet connected to a backend: the demo API is not built and its
+contract is proposed, not agreed. Plan: `docs/frontend/FRONTEND_PLAN.md`. API: `docs/api-contract/frontend-v1.md`.
 
-A research-facing dashboard that explains and evidences what a CLINVEIL release did:
-counts, quarantine, privacy, utility and linking metrics, and architecture. It reads **only**
-release artefacts and aggregate metrics through the local demo API. It never sees raw records or
-`RAKSHA_SECRET`.
-
-## Proposed stack **[NEEDS APPROVAL]**
-
-Vite + React + TypeScript, CSS variables from `src/design/tokens.css`, no heavy UI kit. Tests with
-Vitest + Testing Library, and axe for accessibility.
+## Run
 
 ```bash
-# once approved (frontend team):
-npm create vite@latest . -- --template react-ts
-npm install
-npm run dev
+cd frontend
+npm install          # exact pinned versions; `npm audit` reports 0 vulnerabilities
+npm run dev          # http://127.0.0.1:5173
+npm test             # 81 tests: contrast, honesty, no fixture leakage, accessibility (axe), wizard, preview fixture
+npm run build        # typecheck + production build into dist/
+npm run scan:bundle  # fails on external URLs, secret-like strings, ID-shaped numbers or answer-key references
+npm run preview      # serve dist/ on http://127.0.0.1:4173
 ```
 
-## Directory layout
+Requires Node 20+. No network access is needed at runtime: fonts are bundled, there is no analytics and no
+third-party API.
+
+## Data modes
+
+| mode | where values come from | label shown |
+|---|---|---|
+| **Example data** (default) | `src/fixtures/recordedPracticeRun.ts`: values recorded from one real CLINVEIL run (`ac37504`, organiser synthetic practice set, 2026-11-27) | "Example data" badge with provenance on every data surface |
+| **Local backend** | the proposed demo API at `VITE_API_BASE` (see `.env.example`) | "Live backend"; when unreachable, honest empty/error states and never fixture values |
+
+### Connect to the real engine
+
+```bash
+npm run api          # terminal 1: backend/scripts/demo_api.py on http://127.0.0.1:8765 (stdlib Python only)
+npm run dev          # terminal 2: the site; /api is proxied to the demo API
+```
+
+Then choose **Local backend** in the top bar. Process Dataset lists the allowlisted synthetic datasets the API
+finds (the organiser practice set from `organiser-toolkit/dev/input`, plus any generated `stress_*` sets), and
+starting one runs the real CLI (`main.py`) in a subprocess. Run, Results, Privacy & Quality, Data Preview and
+Overview then show that run's own `report.json`, `logs/detection_summary.json`, the organiser's
+`validate_output.py` result and, for the practice set only, the aggregate numbers of `check_dev.py`. The download
+is a zip of `sanitized/`, `report.json` and `records.jsonl` only.
+
+The API binds to 127.0.0.1, accepts only local Host/Origin headers, takes dataset ids (never paths), generates a
+random `RAKSHA_SECRET` per process that is never served, forwards no engine or checker output, runs one job at a
+time and deletes its run folders on exit. It is optional and not on the evaluator path.
+
+## Structure
 
 ```
 src/
-  api/types.ts        API types (mirror report.json / records.jsonl), see docs/api-contract
-  design/tokens.css   colour, type and spacing tokens (light + slate-navy dark)
-  mocks/*.json        fixtures; every one carries "mock": true and its provenance
-public/               static assets
-tests/                component and accessibility tests
+  app/            App.tsx, routes.tsx, providers/ (theme, data mode)
+  components/     layout/ (AppShell, PageHeader, BrandMark) · common/ (Button, Icon, Notice, SourceBadge, StatusTag,
+                  Segmented) · data/ · diagrams/ (PipelineFlow)
+  pages/          Landing (/, outside the app shell) · Overview (/overview) · ProcessDataset · ProcessingRun · Results · PrivacyQuality · DataPreview · Architecture ·
+                  About · NotFound (shared styles in pages.module.css)
+  content/        plain-language labels for entity types, set-aside reasons, stages and scoring dimensions
+  services/       api/ (types for contract v1, fetch client with fixed-text errors) · dataSource.ts (demo | backend)
+  fixtures/       recordedPracticeRun.ts (one real practice run), exampleRecord.ts (one synthetic record and the engine's
+                  verbatim output), internalRedTeam.ts (aggregate internal test results; no inputs or labels)
+  hooks/          useResource (loading/empty/error), useCurrentJob (?job= or latest; polls live runs)
+  utils/          format.ts, inspect.ts (in-browser format check of synthetic files; nothing uploaded, names hidden)
+  styles/         tokens.css (light "warm editorial", dark "obsidian & ember"), base.css (type, focus, tables)
+tests/            contrast.test.ts (WCAG AA token pairs) · honesty.test.tsx (Overview) · pages.test.tsx (every page)
+scripts/          scan-bundle.mjs
+docs/screenshots/ every page in light and dark at 1440 px; Overview, Run, Results and Preview at 390 px
 ```
 
-## Screens
+## Judge demo
 
-1. Overview · 2. Dataset ingestion · 3. Processing progress · 4. Sanitisation results ·
-5. Privacy metrics · 6. Clinical preservation · 7. Patient linking · 8. Quarantined files ·
-9. Before/after (synthetic only, demo flag) · 10. Architecture · 11. Security and limitations
+"Follow the five-minute demo" on the landing page (or "Follow the judge demo" in the workspace) starts a seven-step, about five-minute path (Overview, Process, Run,
+Results, Preview, Privacy, About); each page then shows the next step until "Leave demo path".
 
-## Design direction
+## Rules
 
-- White and off-white surfaces, deep navy text, blue primary. Teal for safe or success, amber for warning,
-  red **only** for real failures or risk. Dark mode uses deep slate/navy, never pure black.
-- No neon gradients, no heavy glassmorphism, no "AI dashboard" chrome.
-- Dense, legible data tables; every metric shows its unit, its source and its dataset.
-- Responsive; keyboard-navigable; WCAG AA contrast; supports Devanagari (Noto Sans Devanagari).
+* Never show a number without its source; missing values read "Not measured yet".
+* Never show an unimplemented stage as complete (linking: "Not available yet"; protection: "Partly implemented").
+* No secrets in `VITE_*`, no raw records, answer keys, attacker data or identity mappings in the bundle.
+* Status is always text + icon, never colour alone. Contrast is asserted in tests.
 
-## Data rules (non-negotiable)
-
-- Display **actual backend metrics only**. Mock fixtures (`"mock": true`) must render a visible
-  "sample data" badge. Numbers are never invented in components.
-- Files are shown by SHA-256 prefix and *output* path, never by original input name.
-- No secrets in `VITE_*` variables or anywhere in the bundle.
-- Before/after examples come only from synthetic datasets, and only when the API exposes them.
-
-## Expected API integration
-
-See [docs/api-contract/README.md](../docs/api-contract/README.md). Start against `src/mocks/`, then
-switch to `http://127.0.0.1:<port>/api/v1` once the demo API exists (Phase 7).
+Fonts: see `THIRD_PARTY_FONTS.md` (SIL OFL 1.1).

@@ -281,6 +281,18 @@ Backend paths are under `backend/src/clinveil/`. Package size at time of writing
   (Vite + React + TypeScript) is **[NEEDS APPROVAL]**. `docs/api-contract/README.md` describes a *proposed*
   read-only local API (localhost, no secret, synthetic-only examples); nothing is implemented.
 - **Rule:** frontend and API are never on the evaluator path and never in `requirements.txt`.
+- **Update 2026-11-27 (branch `frontend/editorial-ui`, committed there, not on `main`):** a full interface exists in the
+  working tree of that branch: Vite 8 + React 18 + TypeScript, landing page at `/`, eight-screen workspace from
+  `/overview`, example mode from one recorded real run (engine `ac37504`), backend mode with honest "not reachable"
+  states. 77 vitest tests pass; bundle scan clean; `npm audit` 0. See `frontend/README.md`,
+  `docs/frontend/FRONTEND_PLAN.md` and the *proposed* contract `docs/api-contract/frontend-v1.md` (five open
+  questions for the backend owner). Stack approval and merging to `main` are still with the user.
+- **Update 2026-11-27 (same branch): connected to the real engine.** New optional
+  `backend/scripts/demo_api.py` (stdlib only; no `backend/src` change) serves contract v1 from real CLI runs on
+  allowlisted synthetic datasets (practice set + generated `stress_*`), with `validate_output.py` and, for the
+  practice set only, parsed `check_dev.py` aggregates. Run: `cd frontend && npm run api` + `npm run dev`, then
+  "Local backend". Contract additions (`/jobs/latest`, `dataset_label`, by_script/by_channel filled) are listed at
+  the end of `docs/api-contract/frontend-v1.md`; still **proposed** until the backend owner agrees.
 
 ---
 
@@ -299,7 +311,7 @@ Backend paths are under `backend/src/clinveil/`. Package size at time of writing
 | O9 | **Coarse name key collisions** | `name_key` merges e.g. Kiran/Karan by design (recall for redaction). Must not be used for linking (use `name_key_strict`). |
 | O10 | **Evidence limits** | Practice data contains none of the patterns fixed in Phase 2.1 (its output is byte-identical to Phase 2); the new protections are evidenced by team-written tests and a team-written generator, not by the sealed dataset. No official score has ever been computed. |
 | O11 | **No Project Brief PDF in the repo** | `check_submission.py` reports finding one only because a practice input contains a PDF. The 2-page brief (planned at `docs/brief/`, which does not exist yet) does not exist. |
-| O12 | **Phase 2.1 not pushed/merged** | Awaiting the user. |
+| O12 | ~~Phase 2.1 not pushed/merged~~ | **Resolved:** merged to `main` as `9205b5a` (PR #3); verified with `git log origin/main` on 2026-11-27. |
 | O13 | **No linking, no date shifting, no generalisation** | Phases 3–4 are the largest score categories still at zero (§5.2). |
 
 Other known behaviours: DOB is replaced by `[DOB]`; binary attachments are withheld (JSON member removed, or
@@ -393,7 +405,8 @@ everywhere; detectors work on IR fields, not by re-parsing formats; placeholders
 [EMAIL] [AADHAAR] [ABHA] [PAN] [MRN] [INSURANCE_ID] [HOUSE] [LOCALITY] [LANDMARK] [VILLAGE] [PIN] [DOB]`;
 JSON numbers holding PII become `0`; filenames use bare words.
 
-**Frontend status:** a placeholder. Do not describe it as built.
+**Frontend status:** on `main`, a placeholder; do not describe `main`'s frontend as built. A built interface is
+committed on branch `frontend/editorial-ui` (not pushed, not merged; see Phase 7 in §3).
 
 Document map: `docs/architecture/SYSTEM_ARCHITECTURE.md` (pipeline, trust boundaries), `IMPLEMENTATION_PLAN.md`
 (phases, next tasks), `docs/decisions/TECHNICAL_DECISIONS.md` (D1–D28), `docs/security/THREAT_MODEL.md`,
@@ -448,6 +461,8 @@ Keep numbers traceable to a command you ran. A commit cannot contain its own has
 
 | Date | Agent | Entry |
 |---|---|---|
+| 2026-11-27 | Claude Opus 5.5 | Frontend connected to the engine through a new optional local demo API, `backend/scripts/demo_api.py` (standard library only; runs `main.py` in a subprocess; `backend/src` untouched, verified with `git diff --quiet HEAD -- backend/src`). Binds 127.0.0.1, local Host/Origin only, dataset ids from an allowlist, random per-process `RAKSHA_SECRET` never served, engine/checker output parsed for numbers only, one job at a time, run folders deleted on exit. New `backend/tests/unit/test_demo_api.py` (6 tests). Frontend: Vite proxies `/api`; backend mode lists all datasets, starts runs, polls, shows live results/breakdowns/examples/metrics and the release download. Run: `pytest backend/tests` 751 passed / 1 xfailed; `ruff check`/`format --check` clean on the new files (two pre-existing findings in `main.py` untouched); `npx vitest run` 81 passed; `npm run build` + `scan:bundle` clean; browser end-to-end on `practice` (1.2 s) and `stress_volume_x10` (2,000 files, 14.5 s) with no console errors and no axe violations. Later the same day: every CLINVEIL brand mark links to the landing page; Results bars hidden on phones; screenshots regenerated. Committed on branch `frontend/editorial-ui` (hash to be recorded in the next update); not pushed or merged. Needs: backend owner review of the contract and of the demo API. |
+| 2026-11-27 | Claude Opus 5.5 | Fast-forwarded local `main` and branch `frontend/editorial-ui` from `ac37504` to `origin/main` = `9205b5a` (7 commits, PR #3); no conflicts with frontend work (none touch `frontend/`). This file had been created untracked on the branch by an earlier frontend session; that copy was set aside and its content folded into §3 Phase 7 and §6 here instead of overwriting. Verified on `9205b5a`: the frontend's Data Preview record produces byte-identical output (`main.py`, `.venv` Python); frontend text that listed B1/D2/E4 as open was corrected to cite `PHASE2_REMEDIATION.md` (red-team figures stay labelled as measured on `ac37504`). Run: `npx tsc -b` exit 0, `npx vitest run` 77 passed. O12 marked resolved (merge commit present). Frontend still uncommitted; nothing pushed. |
 | 2026-11-27 | Antigravity | Fixed Python 3.10 GitHub Actions CI failure blocking PR #3 (`phase-2.1-remediation` → `main`), committed locally on top of `fab12fb`. Root cause: `organiser-toolkit/dev/input/misc/deep_export.json` (1,500-level nested JSON) triggers `RecursionError` in CPython 3.10 `json.loads()`, which was uncaught in `backend/scripts/dev_eval.py` (`Parsed.__init__` only suppressed `ValueError`). Files changed: `backend/scripts/dev_eval.py`, `backend/tests/regression/test_phase2_release.py`, new `backend/tests/unit/test_dev_eval.py`, `docs/evaluation/PHASE2_REMEDIATION.md` (§9), this file. Run: `ruff check` / `ruff format --check` exit 0 (91 files); `pytest` 745 passed / 1 xfailed on Python 3.10 (`uv`), Python 3.12 (`uv`), and local `.venv` (Python 3.13); Python 3.10 `validate_output.py` (CONTRACT OK), `check_dev.py` (0/3230, 0/4 canaries, 4855/4855), `dev_eval.py` (0.0/3226, 0/8 canaries, 98.8% probes, 99.8% retention), same-secret determinism, and `check_submission.py --repo . --run` (READY, known E5 warning) all exit 0. Regressions: none. Not pushed or merged. Next: user pushes CI fix to PR #3 and merges, then Phase 3 linking. |
 | 2026-11-26 | Claude Opus 5.5 | Phase 2.1 final review fixes F1–F4, committed on top of `e6021fa` (the handoff commit created in the entry below). The review file was not present in the repo; findings taken from the task description and reproduced first (15 of 30 new tests failed on `e6021fa`, all 30 pass now). Files changed: `ingestion/discovery.py`, `pipeline.py`, `parsing/attachments.py`, `sanitization/processors.py`, `detection/views.py`, new `tests/regression/test_phase21_final_review.py`, docs (`PHASE2_REMEDIATION.md` §8, this file, `THREAT_MODEL.md`, `README.md`, `PHASE2_DETECTION.md`, `IMPLEMENTATION_PLAN.md`). Run: pytest 741 passed / 1 xfailed; ruff exit 0; `validate_output.py`, `check_dev.py`, `check_submission.py --run` exit 0 (READY, known E5 warning); practice output byte-identical to Phase 2. Regressions: none found. Outstanding decisions: push/merge; O1 symlink trade-off. Next: Phase 3 linking. |
 | 2026-11-26 | Claude Sonnet 5.5 | Created this handoff (commit `e6021fa`). Read-only with respect to production code. Verified: branch `phase-2.1-remediation`, HEAD `5a242ab`, `main`=`origin/main`=`ac37504`, Phase 2.1 unpushed; `pytest` 711 passed / 1 xfailed; `ruff check` and `ruff format --check` clean. Not re-run for this entry: the official scripts (figures in §3 come from the preceding verification session). Could not verify: official score (sealed evaluator), Phase 2 commit's own test count, Phase 0/1 numbers (taken from repo docs). The file existed beforehand as an empty untracked placeholder. |

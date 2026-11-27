@@ -1,0 +1,42 @@
+.flow {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border-top: 1px solid var(--rule);
+}
+.flowStep {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: var(--s-2);
+  padding: var(--s-4) var(--s-5) var(--s-4) 0;
+  margin-right: var(--s-5);
+}
+.flowStep + .flowStep { padding-left: var(--s-5); margin-left: calc(-1 * var(--s-5)); border-left: 1px solid var(--rule); }
+.flowHead { display: flex; align-items: baseline; gap: var(--s-2); }
+.flowNum { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--ink-3); }
+.flowTitle { font-family: var(--font-serif); font-size: var(--text-xl); font-weight: 500; letter-spacing: -0.01em; }
+.flowText { font-size: var(--text-sm); color: var(--ink-2); line-height: 1.5; }
+.flowState { padding-top: var(--s-2); }
+
+@media (max-width: 960px) {
+  .flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .flowStep, .flowStep + .flowStep { margin: 0; padding: var(--s-4) var(--s-4) var(--s-4) 0; border-left: 0; border-bottom: 1px solid var(--rule); }
+}
+@media (max-width: 560px) {
+  .flow { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* steps light up one after another while a line draws across the top */
+.flow { position: relative; border-top-color: transparent; }
+.flow::before { content: ""; position: absolute; top: -1px; left: 0; right: 0; height: 1px; background: var(--rule); transform-origin: left; animation: flow-line 1100ms var(--ease) both; }
+.flowStep { animation: flow-step 620ms var(--ease) both; }
+.flowStep::after { content: ""; position: absolute; top: -1px; left: 0; width: 28px; height: 2px; background: var(--accent); transform-origin: left; animation: flow-mark 520ms var(--ease) both; animation-delay: inherit; }
+.flowStep + .flowStep::after { left: var(--s-5); }
+@keyframes flow-line { from { transform: scaleX(0); } to { transform: none; } }
+@keyframes flow-step { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes flow-mark { from { transform: scaleX(0); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .flow::before, .flowStep, .flowStep::after { animation: none; } }
+@media (max-width: 960px) { .flowStep::after, .flowStep + .flowStep::after { left: 0; } }
