@@ -1,0 +1,217 @@
+/* CLINVEIL design tokens.
+ *
+ * Light, "warm editorial": ivory ground, white and cream surfaces, ink text, burnt orange used sparingly.
+ * Dark, "obsidian and ember": near-black ground, charcoal surfaces, warm white text, ember accents,
+ * muted red reserved for critical security conditions.
+ *
+ * Brand colours that do not reach WCAG 2.2 AA for small text (burnt orange #C96832 = 3.6:1 on ivory) are used
+ * only for non-text accents (selection bars, focus rings, rules) and large display type. Text and filled buttons
+ * use the "-ink" variants. Measured ratios are asserted in tests/contrast.test.ts.
+ */
+
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* ground and surfaces */
+  --bg: #faf8f3;
+  --surface: #ffffff;
+  --surface-2: #f1ede5;
+  --surface-sunken: #f6f3ec;
+  --rule: #e5ded2;                /* hairlines, table rules (decorative) */
+  --rule-strong: #8f877b;         /* form-control borders: >= 3:1 against surfaces */
+
+  /* text */
+  --ink: #25231f;                 /* 14.8:1 on --bg */
+  --ink-2: #67635c;               /* secondary text: 5.4:1 on --bg, 4.9:1 on --surface-2 */
+  --ink-3: #736e66;               /* tertiary text: >= 4.5:1 on --bg, --surface, --surface-sunken (not --surface-2) */
+  --ink-inverse: #ffffff;
+
+  /* brand */
+  --accent: #c96832;              /* burnt orange: accents, selection bars, focus ring (3.6:1, non-text) */
+  --accent-ink: #a64e2c;          /* text links and filled buttons (5.3:1 on --bg, white on it 5.6:1) */
+  --accent-ink-hover: #8f4426;
+  --accent-wash: #f6e7dc;         /* selected-row / highlight background */
+
+  /* status (text-safe variants; hues from the brand palette) */
+  --ok: #42765b;                  /* 5.0:1 */
+  --ok-wash: #ecf4ee;
+  --warn: #96601c;                /* 5.0:1 (brand #A96B24 kept for icons) */
+  --warn-icon: #a96b24;
+  --warn-wash: #f8f0e2;
+  --danger: #a8432f;              /* 5.6:1 (brand #B94A3B kept for icons) */
+  --danger-icon: #b94a3b;
+  --danger-wash: #f5e1dc;
+  --neutral-wash: #ece7de;
+
+  /* data preview legend */
+  --mark-removed: #f2dcd5;
+  --mark-removed-ink: #8e3a2a;
+  --mark-generalised: #f3e6cd;
+  --mark-generalised-ink: #7c5016;
+  --mark-preserved: #dcebe1;
+  --mark-preserved-ink: #2f5c45;
+  --mark-pseudonym: #e9e1f0;
+  --mark-pseudonym-ink: #5a4475;
+
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  --shadow-raise: 0 1px 0 rgba(37, 35, 31, 0.04), 0 1px 2px rgba(37, 35, 31, 0.06);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #111110;
+  --surface: #1a1917;
+  --surface-2: #24221f;
+  --surface-sunken: #151413;
+  --rule: #35312d;
+  --rule-strong: #6f685f;         /* >= 3:1 against --surface */
+
+  --ink: #f4f0e8;                 /* 16.6:1 */
+  --ink-2: #b2aaa0;               /* 8.2:1 */
+  --ink-3: #8a837a;
+  --ink-inverse: #111110;
+
+  --accent: #e58a48;              /* ember: 7.3:1, usable for text too */
+  --accent-ink: #e58a48;
+  --accent-ink-hover: #f0a066;
+  --accent-wash: #3a2618;
+
+  --ok: #75a588;
+  --ok-wash: #1f2c24;
+  --warn: #e1ab60;
+  --warn-icon: #e1ab60;
+  --warn-wash: #332818;
+  --danger: #e57268;              /* lighter than brand #D65B50 so text stays >= 4.5:1 on raised surfaces */
+  --danger-icon: #d65b50;
+  --danger-wash: #3a1d1a;
+  --neutral-wash: #2a2825;
+
+  --mark-removed: #45221d;
+  --mark-removed-ink: #f2b3a8;
+  --mark-generalised: #3d2f19;
+  --mark-generalised-ink: #efcf98;
+  --mark-preserved: #1f3327;
+  --mark-preserved-ink: #a9d3b8;
+  --mark-pseudonym: #302640;
+  --mark-pseudonym-ink: #d1c0ea;
+
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  --shadow-raise: none;
+}
+
+:root {
+  /* type families (bundled locally, SIL OFL 1.1) */
+  --font-sans: "Geist Variable", "Noto Sans Devanagari Variable", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  --font-serif: "Newsreader Variable", "Iowan Old Style", Georgia, serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --font-deva: "Noto Sans Devanagari Variable", "Geist Variable", sans-serif;
+
+  /* type scale (rem at 16px root; interface body is 15px) */
+  --text-xs: 0.75rem;     /* 12 meta, table captions */
+  --text-sm: 0.8125rem;   /* 13 labels, secondary */
+  --text-md: 0.9375rem;   /* 15 body */
+  --text-lg: 1.0625rem;   /* 17 lead */
+  --text-xl: 1.375rem;    /* 22 section titles (serif) */
+  --text-2xl: 1.875rem;   /* 30 page titles (serif) */
+  --text-3xl: clamp(2.125rem, 1.6rem + 2vw, 3rem); /* overview statement */
+
+  --leading-tight: 1.15;
+  --leading-snug: 1.35;
+  --leading-body: 1.6;
+  --tracking-label: 0.06em;
+
+  /* spacing (4px base) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+
+  /* shape */
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 8px;
+
+  /* layout */
+  --sidebar-w: 232px;
+  --content-max: 1120px;
+  --measure: 66ch;        /* comfortable paragraph width */
+
+  /* motion */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --t-fast: 120ms;
+  --t-theme: 180ms;
+  --t-slide: 260ms;
+  --t-enter: 320ms;
+  --t-grow: 700ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-fast: 0ms;
+    --t-theme: 0ms;
+    --t-slide: 0ms;
+    --t-enter: 0ms;
+    --t-grow: 0ms;
+  }
+}
+
+/* Printing always uses the light palette: browsers drop page backgrounds, so dark-theme text would print
+   light-on-white. Copied from the light block above so the two cannot drift. */
+@media print {
+  :root[data-theme] {
+  color-scheme: light;
+
+  /* ground and surfaces */
+  --bg: #faf8f3;
+  --surface: #ffffff;
+  --surface-2: #f1ede5;
+  --surface-sunken: #f6f3ec;
+  --rule: #e5ded2;                /* hairlines, table rules (decorative) */
+  --rule-strong: #8f877b;         /* form-control borders: >= 3:1 against surfaces */
+
+  /* text */
+  --ink: #25231f;                 /* 14.8:1 on --bg */
+  --ink-2: #67635c;               /* secondary text: 5.4:1 on --bg, 4.9:1 on --surface-2 */
+  --ink-3: #736e66;               /* tertiary text: >= 4.5:1 on --bg, --surface, --surface-sunken (not --surface-2) */
+  --ink-inverse: #ffffff;
+
+  /* brand */
+  --accent: #c96832;              /* burnt orange: accents, selection bars, focus ring (3.6:1, non-text) */
+  --accent-ink: #a64e2c;          /* text links and filled buttons (5.3:1 on --bg, white on it 5.6:1) */
+  --accent-ink-hover: #8f4426;
+  --accent-wash: #f6e7dc;         /* selected-row / highlight background */
+
+  /* status (text-safe variants; hues from the brand palette) */
+  --ok: #42765b;                  /* 5.0:1 */
+  --ok-wash: #ecf4ee;
+  --warn: #96601c;                /* 5.0:1 (brand #A96B24 kept for icons) */
+  --warn-icon: #a96b24;
+  --warn-wash: #f8f0e2;
+  --danger: #a8432f;              /* 5.6:1 (brand #B94A3B kept for icons) */
+  --danger-icon: #b94a3b;
+  --danger-wash: #f5e1dc;
+  --neutral-wash: #ece7de;
+
+  /* data preview legend */
+  --mark-removed: #f2dcd5;
+  --mark-removed-ink: #8e3a2a;
+  --mark-generalised: #f3e6cd;
+  --mark-generalised-ink: #7c5016;
+  --mark-preserved: #dcebe1;
+  --mark-preserved-ink: #2f5c45;
+  --mark-pseudonym: #e9e1f0;
+  --mark-pseudonym-ink: #5a4475;
+
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  --shadow-raise: 0 1px 0 rgba(37, 35, 31, 0.04), 0 1px 2px rgba(37, 35, 31, 0.06);
+  }
+}

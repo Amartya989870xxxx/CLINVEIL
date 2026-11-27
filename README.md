@@ -1,151 +1,285 @@
 # CLINVEIL
 
-**Privacy infrastructure for trusted medical data sharing.**
+**An offline, multilingual privacy firewall for Indian clinical records.**
 
-CLINVEIL is an offline, CPU-only, deterministic de-identification engine for messy,
-multilingual Indian hospital exports. It removes personal data, keeps clinical values exactly
-intact, gives each real patient one stable keyed pseudonym across files and scripts, and resists
-re-identification by an attacker holding a voter-roll-style register.
+CLINVEIL de-identifies messy hospital exports (English, Hindi in Devanagari, and Hinglish) on a CPU, with no
+network. It removes personal data wherever it hides, keeps clinical values exactly intact, gives each patient one
+stable keyed pseudonym when the evidence is strong enough, and generalises or suppresses the indirect identifiers
+that make re-identification possible.
 
-Built by team **APEX** for **Yugaantar DevForge · Track 3 · Secret Wards**. All data handled in development and
-demonstration is **synthetic**. No real patient data is used or permitted anywhere in this project.
+Team **APEX** · Yugaantar DevForge · **Track 3: Secret Wards** ·
+Repository: <https://github.com/Amartya989870xxxx/CLINVEIL> ·
+Project Brief: [docs/brief/CLINVEIL_Project_Brief.pdf](docs/brief/CLINVEIL_Project_Brief.pdf)
 
-> **Status: Phases 1–3 complete; Phase 4 partially implemented (uncommitted at time of writing).** Six-channel multilingual
-> detection (content, header, key, metadata, base64, filename), owner-aware identity resolution with keyed HMAC pseudonyms
-> (Phase 3, `9243167`). **Phase 4 (implemented, integrated and tested; not independently audited):** per-patient keyed date
-> shift of structured, date-named and free-text dates (CSV/TSV/JSON/FHIR/text; unlinked records get their own record-level
-> offset; ambiguous day/month dates without document evidence become `[DATE]`); 5-year bands for structured and `73/F` ages; PIN to a true 3-digit prefix (`226XXX`) only where at least 5 records of the document share (age band,
-> gender, PIN prefix), else `[PIN]`. **Not implemented:** village to tehsil/district (no offline mapping), banding of JSON
-> numeric or free-text ages, formal k-anonymity. On the practice data: CONTRACT OK, READY TO SUBMIT, linking P 1.00 / R 0.97 with 0 wrong merges,
-> 1125 tests pass on Python 3.10/3.12/3.13. These are development measurements, not an official score. Known limitations
-> OBS-1/OBS-2: [docs/PROJECT_HANDOFF.md](docs/PROJECT_HANDOFF.md). Project Brief:
-> [docs/brief/CLINVEIL_Project_Brief.pdf](docs/brief/CLINVEIL_Project_Brief.pdf).
-> Roadmap: [docs/architecture/IMPLEMENTATION_PLAN.md](docs/architecture/IMPLEMENTATION_PLAN.md).
+All data handled in development and demonstration is **synthetic**. No real patient data is used or permitted.
 
-## The challenge
+---
 
-Four hospital systems export registrations (CSV, UTF-16 TSV, cp1252 legacy CSV, nested JSON), OPD
-visits, discharge summaries, Hindi prescriptions, Hinglish nursing notes, lab reports, WhatsApp
-forwards, FHIR R4 Bundles, billing claims and deliberately broken files. The same patient appears as
-"Mohammad Arif", "मोहम्मद आरिफ" and "Arif sahab". PII hides in file names, CSV headers, JSON keys,
-export metadata and base64 attachments. The output is scored on privacy against automated attacks
-(25), detection across three scripts (20), clinical utility (20), identity consistency (15),
-output validity (10) and speed and reliability (10). Over-redaction is penalised through the utility
-coupling, so deleting everything scores only about 20/100.
+## Overview
+
+Hospital data is spread across systems, file formats and scripts. The same patient appears as a CSV row, a FHIR
+Bundle and a Hinglish nursing note, sometimes under different record numbers. Removing names is not enough:
+an exact age, a village, a visit date, a length of stay or a rare diagnosis can identify a person when combined
+with a public register.
+
+CLINVEIL is built around three rules:
+
+1. **Find personal data in every channel:** content, CSV/TSV headers, JSON keys, export metadata, base64
+   payloads and file names, in Latin script, Devanagari and Hinglish.
+2. **Link patients conservatively.** Every identifier has an *owner*: a father's Aadhaar in a child's note is
+   evidence about a relative. It can veto a link, never create one. Conflicting groups abstain. A wrong merge
+   costs more than a missed one.
+3. **Keep clinical meaning.** Medicines, doses, vitals, lab values, diagnoses and file structure are preserved.
+   Dates are shifted per patient, so intervals stay exact.
+
+## Key capabilities
+
+| Capability | Status |
+|---|---|
+| Multilingual PII detection (English, Hindi/Devanagari, Hinglish): names, relatives, Aadhaar, ABHA, PAN, MRN/UHID, phone, e-mail, insurance IDs, house/locality/landmark/village, PIN, DOB | Implemented |
+| Six detection channels: content, header, key, metadata, base64, filename | Implemented |
+| Conservative identity resolution: typed, owner-aware evidence, strict cross-script name keys, set-based complete-linkage clustering, abstention on conflict, distinct-UHID veto | Implemented |
+| Keyed pseudonyms: domain-separated HMAC-SHA256 over `RAKSHA_SECRET`, no stored mapping | Implemented |
+| Per-patient date shift: one keyed offset per linked patient (±180 days, never 0); unlinked records get their own offset | Implemented for structured date fields, date-named JSON keys and full dates in free text. Not for base64 payloads or export audit timestamps |
+| Ambiguous dates: day/month order inferred per document; dates whose order cannot be established are suppressed as `[DATE]` | Implemented |
+| 5-year age bands (`47` → `45-49`, `73/F` → `70-74/F`) | **Partial:** structured age fields only. JSON numeric ages and ages inside free text are kept as written |
+| DOB | Removed (`[DOB]`); FHIR `birthDate` keeps the year |
+| PIN → 3-digit prefix (`226XXX`) with rare-cell suppression | **Partial:** a prefix is kept only if at least `min_group_size` (5) records in the same file share (age band, gender, prefix); otherwise `[PIN]`. Not formal k-anonymity |
+| Village → tehsil/district | **Not implemented:** no trusted offline mapping exists, so villages are suppressed (`[VILLAGE]`) |
+| Quarantine of unsafe or unsupported files (never copied raw) | Implemented |
+| Web interface with upload to a local engine | Implemented (optional, local only; see [Frontend](#frontend-optional)) |
 
 ## Architecture
 
-```
-            ┌──────────────────────────── evaluator sandbox: no network, 2 CPU, 4 GB ────────────────────────────┐
- {input}/ ─►│ ingestion ─► parsing ─► detection ─► linking ─► privacy ─► sanitization ─► export ─► self-check   │─► {output}/
- (read-only)│  discover     CSV/TSV    findings     evidence   HMAC psn    per-format     report     validate   │    sanitized/
-            │  guard        JSON/FHIR  (typed,      blocking   date shift  structure-     records    before     │    report.json
-            │  decode       text       no edits)    clusters   generalise  preserving     .jsonl     exit 0     │    records.jsonl
-            └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
-                   RAKSHA_SECRET (env only) ──► privacy keys; never written, logged or repr'd
+```mermaid
+flowchart LR
+    IN[/"input folder (read-only)"/] --> ING["Format-aware ingestion<br/>discovery · guards · decoding<br/>CSV · TSV · JSON · FHIR R4 · text · base64"]
+    ING --> DET["Multilingual PII detection<br/>Latin · Devanagari · Hinglish"]
+    DET --> EV["Evidence extraction<br/>and normalisation"]
+    EV --> LINK["Conservative identity resolution<br/>owner-aware · set-based · abstains on conflict"]
+    LINK --> PSN["Keyed pseudonyms<br/>HMAC-SHA256"]
+    PSN --> PRIV["Privacy transforms<br/>date shift · age bands · PIN prefix<br/>rare-cell suppression"]
+    PRIV --> SAN["Sanitisation / quarantine<br/>structure-preserving"]
+    SAN --> VAL["Output validation<br/>contract check before exit 0"]
+    VAL --> OUT[/"output/: sanitized/ · report.json · records.jsonl"/]
+    SEC(["RAKSHA_SECRET<br/>environment only"]) -.-> PSN
+    SEC -.-> PRIV
+    ING -.-> Q[("quarantined:<br/>reason code only")]
+    subgraph CH["Six detection channels"]
+      direction TB
+      C1[content] ~~~ C2[header] ~~~ C3[key] ~~~ C4[metadata] ~~~ C5[base64] ~~~ C6[filename]
+    end
+    DET --- CH
 ```
 
-Full design: [docs/architecture/SYSTEM_ARCHITECTURE.md](docs/architecture/SYSTEM_ARCHITECTURE.md).
-
-| Stage | Module | Current state |
+| Stage | Module | What it does |
 |---|---|---|
-| Ingestion | `clinveil.ingestion` | deterministic discovery, symlink and size guards; content-based detection (signatures, JSON-first, markup, delimiter sniffing); UTF-8/BOM/UTF-16 (incl. BOM-less)/cp1252 with mojibake and binary checks |
-| Parsing | `clinveil.parsing` | common IR (`Document`/`Field`: address, path, record, channel, kind, label); bounded JSON (depth 64, size, nodes); FHIR roles, entries and reference resolution; declared and embedded base64 payloads |
-| Detection | `clinveil.detection` | semantics, validated identifiers, contextual names, addresses, clinical protection, value-index propagation; typed offset-only `Finding`s |
-| Linking | `clinveil.linking` | owner-aware typed evidence, set-based complete-linkage clusters, abstention on conflicts, R7 distinct-UHID veto |
-| Privacy | `clinveil.privacy` | HMAC pseudonyms; per-patient date shift, 5-year age bands, PIN prefix with rare-cell suppression (`privacy/transform.py`, applied in sanitisation) |
-| Sanitisation | `clinveil.sanitization` | findings → typed placeholders; numbers → 0; FHIR birthDate → year; payloads re-encoded; PII paths renamed |
-| Export | `clinveil.export` | `report.json`, `records.jsonl`, contained writes |
-| Security | `clinveil.security` | unprintable secret, PII-free reason codes, path containment |
-| Validation | `clinveil.validation` | in-process release check before exit 0 |
+| Ingestion | `clinveil.ingestion` | deterministic discovery; symlink, size and special-file guards; content-based format detection; UTF-8/BOM/UTF-16/cp1252 decoding |
+| Parsing | `clinveil.parsing` | one intermediate representation (`Document`/`Field` with address, record and channel); bounded JSON; FHIR roles and references; base64 payloads |
+| Detection | `clinveil.detection` | column semantics (renamed and Hindi labels), validated identifiers, contextual names and relatives, address components, clinical and doctor protection, run-wide value propagation |
+| Linking | `clinveil.linking` | owner-aware typed evidence, blocking, complete-linkage clustering, ambiguous-bridge freezing |
+| Privacy | `clinveil.privacy` | HMAC pseudonyms and date-shift keys (`pseudonym.py`), date/age/PIN transforms (`transform.py`) |
+| Sanitisation | `clinveil.sanitization` | applies findings and Phase 4 transforms per format; FHIR references rewritten consistently |
+| Export / validation | `clinveil.export`, `clinveil.validation` | `report.json`, `records.jsonl`, in-process contract check |
+
+More detail: [docs/architecture/SYSTEM_ARCHITECTURE.md](docs/architecture/SYSTEM_ARCHITECTURE.md).
+
+## Supported formats
+
+| Input | Handling |
+|---|---|
+| CSV, TSV (UTF-8, UTF-8 with BOM, UTF-16 with or without BOM, cp1252) | parsed; headers are a detection channel |
+| JSON (nested; bounded depth, size and node count from `config/policy.yaml`) | parsed; keys are a detection channel |
+| FHIR R4 JSON Bundles | parsed per resource; references rewritten consistently; `birthDate` → year |
+| Plain text (notes, prescriptions, chat exports) | parsed as free text |
+| XHTML narratives inside FHIR resources (`text.div`) | parsed with tag-aware ownership |
+| Base64 text payloads inside JSON/FHIR or text | decoded, sanitised, re-encoded |
+| Binary attachments inside JSON/FHIR (scans, photos, PDFs) | withheld (the `data` member is removed) |
+| Whole XML or HTML files, PDF, image, archive, other binary or empty files | **quarantined** (listed in `report.json` with a reason code, never copied) |
+
+Detection is content-based, not extension-based.
+
+## Technology stack
+
+- **Engine:** Python ≥ 3.10, **standard library only** (`requirements.txt` has no packages). No models, no
+  LLM, no network at runtime.
+- **Tests and linting:** pytest, Ruff (`backend[dev]` extras).
+- **Frontend (optional):** React 18, TypeScript, Vite, Vitest. Fonts are bundled (see
+  [frontend/THIRD_PARTY_FONTS.md](frontend/THIRD_PARTY_FONTS.md)).
+- **Local demo API (optional):** `backend/scripts/demo_api.py`, standard library only. It runs the same CLI
+  engine in a subprocess.
 
 ## Installation
 
-Requires Python 3.10+. The runtime uses **only the standard library**.
-
 ```bash
 git clone https://github.com/Amartya989870xxxx/CLINVEIL.git && cd CLINVEIL
-pip install -r requirements.txt            # evaluator `setup` (currently a no-op)
+pip install -r requirements.txt                 # evaluator setup step (no packages: a no-op)
 
-# development
-python3 -m venv .venv && .venv/bin/pip install -e "backend[dev]"
-git clone https://github.com/Reinforce-SST/Secret-Wards-ToolKit.git organiser-toolkit   # git-ignored
+# development (tests and lint)
+python3 -m venv .venv
+.venv/bin/pip install -e "backend[dev]"         # pytest + ruff
 ```
 
-## Environment variables
+The organiser toolkit (validators and practice data) is not part of this repository. Place it at
+`./organiser-toolkit` (git-ignored, never modified) to run the official checks.
+
+## Configuration and secrets
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `RAKSHA_SECRET` | **yes** | per-release key for pseudonyms and date shifts. The run **fails closed** (exit 2) without it. Never commit, print or store it. |
-| `CLINVEIL_POLICY` | no | alternative policy file (default `config/policy.yaml`) |
-| `CLINVEIL_TOOLKIT` | dev only | organiser toolkit location for tests (default `./organiser-toolkit`) |
+| `RAKSHA_SECRET` | **yes** | per-release key for pseudonyms and date shifts. Without it the run fails closed (exit 2). Never commit, print or store it |
+| `CLINVEIL_POLICY` | no | alternative policy file (or `--policy <file>`); default `config/policy.yaml` |
+| `CLINVEIL_TOOLKIT` | dev only | organiser toolkit location for tests and `official_checks.sh` |
 
-No default secret exists anywhere in the code. `practice` in examples is the organiser's public
-practice value, not a release secret.
+There is no default secret anywhere in the code. Generate a fresh random value per release, for example
+`export RAKSHA_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"`. The same secret gives the
+same pseudonyms and date shifts; a different secret gives unlinkable ones.
 
-## Running
+`config/policy.yaml` (flat `key: value`, read without PyYAML):
+
+| Key | Value | Meaning |
+|---|---|---|
+| `age_band_years` | 5 | width of age bands (a band always contains the true age) |
+| `date_shift_max_days` | 180 | per-patient date offsets lie in ±180 days, never 0 |
+| `min_group_size` | 5 | rare-cell threshold for keeping a PIN prefix |
+| `max_file_bytes`, `max_json_bytes`, `max_json_depth`, `max_json_nodes`, `max_attachment_bytes` | see file | ingestion safety limits; larger inputs are quarantined |
+
+## Running CLINVEIL
 
 ```bash
-RAKSHA_SECRET=<secret> python main.py --input <input dir> --output <empty output dir>
+export RAKSHA_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+python main.py --input <input dir> --output <empty output dir>
 ```
 
-This matches `raksha.toml`. Exit codes: `0` complete release, `1` incomplete release or fatal
-error, `2` usage error (missing secret, overlapping directories). stdout and stderr carry counts only.
+This is the command in `raksha.toml`. Exit codes: `0` complete release, `1` incomplete release or fatal error,
+`2` usage error (missing secret, overlapping directories). stdout and stderr carry counts only.
 
-## Testing and official validation
+## Output
+
+```text
+output/
+├── sanitized/      sanitised copies of every processed file, in the original format and structure
+│                   (PII-bearing file names are renamed; quarantined files are absent)
+├── report.json     counts (files, records, identifiers, linked/generalised/suppressed records), applied
+│                   redactions by entity type, every input file's SHA-256, output path, status and reason
+│                   code, timing and peak memory.
+│                   No personal data, no key material
+└── records.jsonl   one line per record: {"file", "loc", "patient"}; "patient" is the keyed pseudonym
+                    (PSN-XXXXXX) of a linked record, or null. No plaintext identity mapping
+```
+
+A `logs/` folder holds PII-free detection counts.
+
+## Testing and results
 
 ```bash
-cd backend && ../.venv/bin/pytest            # unit, integration, regression, security
-../.venv/bin/ruff check src tests ../main.py
-
-backend/scripts/official_checks.sh           # run + validate_output.py + check_dev.py
-backend/scripts/official_checks.sh --submit  # + check_submission.py --run
+cd backend
+../.venv/bin/python -m pytest -q                       # unit, integration, regression, security
+../.venv/bin/ruff check src tests scripts ../main.py
+../.venv/bin/ruff format --check src tests scripts ../main.py
+cd ..
+backend/scripts/official_checks.sh                     # run + validate_output.py + check_dev.py
+backend/scripts/official_checks.sh --submit            # + check_submission.py --run
+cd frontend && npm ci && npm test && npm run build     # optional frontend
 ```
 
-The organiser's `validate_output.py`, `check_dev.py` and `check_submission.py` are used
-**unmodified** from `organiser-toolkit/`.
+Results below are **development measurements on the organiser's public practice dataset** (engine at commit
+`442dfbd`, unchanged since), not official competition scores. The hidden evaluation data has not been seen.
 
-## Models and dependencies
+| Measure (practice data unless stated) | Result |
+|---|---|
+| Automated tests | 1,146 backend tests pass on Python 3.10.20, 3.12.13 and 3.13.7; 86 frontend tests (Vitest); Ruff check and format clean (108 files) |
+| Official `validate_output.py` / `check_submission.py --run` | CONTRACT OK / READY TO SUBMIT |
+| Files | 200 processed: 193 sanitised, 7 quarantined, 822 records |
+| Identity linkage (pairwise, check_dev formula) | TP 6,706 · FP 0 · FN 186 → precision 1.00, recall 0.973 |
+| FHIR | 19 Bundles, 459 references, 0 unresolved after sanitisation |
+| Determinism / unlinkability | same secret: identical outputs (except timing fields); different secret: 0 of 53 pseudonyms shared, same patient grouping |
+| Known-value scans | 0 of 22 PINs, 0 of 78 DOBs, 0 of 47 villages from the practice key visible in output content or file names |
+| Run time / peak memory | 2.42 s engine time and 41.2 MiB peak RSS (from `report.json`); 2.56 s wall clock. Apple M4 Pro, single process. **The 2-CPU / 4 GB sandbox limits were not enforced** in this measurement |
 
-**No models are used.** No LLM, no generative model, no pretrained transformer, no hosted API, no
-network access at runtime. Any future model or dependency must be declared here and in
-[docs/decisions/TECHNICAL_DECISIONS.md](docs/decisions/TECHNICAL_DECISIONS.md), and must meet the
-competition limits (offline, CPU, no model above 50M parameters).
+## Frontend (optional)
 
-## Security design (summary)
+A local web interface in `frontend/` explains the system, lets you upload synthetic files, runs the **real
+engine** through the local demo API, shows live results and offers the engine's own outputs for download. It is
+never on the evaluator path. Requires Node 20+.
 
-Every input is untrusted. A symlink leaving the input root is never opened (its path gets an empty,
-declared placeholder); broken symlinks, FIFOs/devices and oversized files are quarantined unparsed, and
-every read opens the verified real path inside the root (`O_NOFOLLOW`, regular files only). Any per-file failure quarantines that file, and the recorded reason is a fixed code or an
-exception *type name*, never a message, because messages can echo PII. The secret is wrapped in a type
-that refuses to print or pickle. Findings and file handles hide their raw text from `repr`. Nothing is
-logged except counts. No intermediate files are written, and in-memory memo caches are cleared when a run
-ends. The process refuses an output directory that
-overlaps its input. Full model: [docs/security/THREAT_MODEL.md](docs/security/THREAT_MODEL.md).
-
-## Known limitations (Phase 2 / 2.1)
-
-- No patient linking yet (Phase 3). Output therefore does not depend on the secret, and `check_submission.py`
-  warns about this.
-- No date shifting, age banding, location generalisation or rare-value suppression (Phase 4). DOB is replaced
-  by `[DOB]`; FHIR `birthDate` keeps only the year so it stays valid.
-- Names with no context cue that never appear in a structured field can be missed. With cross-file
-  propagation disabled, the practice-data leak rises to 1.3%. See
-  [PHASE2_DETECTION.md](docs/evaluation/PHASE2_DETECTION.md) for all known failure cases.
-- A binary attachment inside JSON/FHIR is withheld (its `data` removed) since Phase 2.1; XML, PDF and images
-  as whole files are quarantined, not parsed. Hex encodings inside plain text are not decoded (`\uXXXX` and %-escapes are).
-- The independent Phase 2 audit and its remediation (what was reproduced, fixed, partly fixed or deferred):
-  [PHASE2_REMEDIATION.md](docs/evaluation/PHASE2_REMEDIATION.md).
-
-## Repository layout
-
+```bash
+.venv/bin/python backend/scripts/demo_api.py          # terminal 1: http://127.0.0.1:8765/api/v1
+cd frontend && npm ci && npm run dev                  # terminal 2: http://127.0.0.1:5173
 ```
-raksha.toml  main.py  requirements.txt  config/policy.yaml   ← evaluator contract (root, required)
-backend/   src/clinveil/ (engine), tests/, scripts/, docs/
-frontend/  research dashboard (placeholder, optional, never on the evaluator path)
-docs/      architecture/ decisions/ api-contract/ security/ evaluation/ team/
-organiser-toolkit/   official kit, git-ignored, never modified
+
+Choose **Local backend** in the interface to process files. **Example mode** shows a clearly labelled recorded
+run and never processes anything. The demo API:
+
+- binds to 127.0.0.1 only and rejects non-local Host/Origin headers;
+- uses a random per-process secret that is never served;
+- accepts uploads of `.csv .tsv .tab .txt .json` only, with plain base names, up to 200 files and 32 MB;
+- runs one job at a time;
+- deletes uploads and runs when they are evicted or the server stops.
+
+Contract: [docs/api-contract/frontend-v1.md](docs/api-contract/frontend-v1.md). Details:
+[frontend/README.md](frontend/README.md). There is no production deployment.
+
+## Privacy, security and limitations
+
+**Security design.** Every input is untrusted:
+- A symlink that leaves the input root is never opened. Broken symlinks, FIFOs/devices and oversized files are
+  quarantined unparsed.
+- Reads use the verified real path (`O_NOFOLLOW`, regular files only).
+- A failure quarantines only that file, with a fixed reason code. Exception messages are never recorded, because
+  they can echo PII.
+- The secret is wrapped in a type that refuses to print or pickle.
+- Nothing is logged except counts, and no intermediate files are written.
+- The process refuses an output directory that overlaps its input.
+
+There is no encryption at rest. Full model: [docs/security/THREAT_MODEL.md](docs/security/THREAT_MODEL.md).
+
+**Known limitations.** CLINVEIL reduces disclosure risk. It does not guarantee anonymity or remove all
+re-identification risk.
+
+- **OBS-1:** when a narrative gives a relative's name in one block and their age or Aadhaar in a later block, those
+  values can fall outside the ownership window and be attributed to the patient, which can cause a false merge.
+- **OBS-2:** a Devanagari danda (`।`) next to a gender word can reduce free-text gender recall.
+- **Age generalisation is partial:** JSON numeric ages and ages inside free text are not banded.
+- **Villages are suppressed, not generalised:** there is no village → tehsil/district mapping. Tehsil, district and
+  state fields are kept.
+- **Rare-cell protection is limited:** it covers the PIN prefix only, per file. Other quasi-identifiers (age band,
+  gender, district, diagnosis, visit week) are not suppressed, and there is no formal k-anonymity.
+- **Date-shift gaps:** dates inside base64 payloads and export audit timestamps (`lastUpdated`, `generated_at`) are not
+  shifted.
+- **Conservative linking:** some records of the same patient stay unlinked (recall 0.973 on practice data). Unlinked
+  records of one patient get different date offsets.
+- **Detection gaps:** names with no context cue that never appear in a structured field can be missed. Hex encodings
+  inside plain text are not decoded.
+- **Unsupported whole files:** XML, PDF and image files are quarantined, so their content is absent from the release.
+- **No external audit of Phase 4:** the privacy transforms have not been independently audited. The Phase 3 linking
+  layer passed targeted independent audits of specific findings only.
+
+Phase history and audit trail: [docs/PROJECT_HANDOFF.md](docs/PROJECT_HANDOFF.md),
+[docs/evaluation/](docs/evaluation/).
+
+## Project Brief
+
+The 2-page brief for the organisers: [docs/brief/CLINVEIL_Project_Brief.pdf](docs/brief/CLINVEIL_Project_Brief.pdf)
+(source: [docs/brief/project_brief.html](docs/brief/project_brief.html)).
+
+## Repository structure
+
+```text
+raksha.toml  main.py  requirements.txt  config/policy.yaml   evaluator contract (repository root)
+backend/
+  src/clinveil/        engine: ingestion, parsing, detection, linking, privacy, sanitization, export, validation
+  tests/               unit, integration, regression (per phase and audit), security, generalization
+  scripts/             official_checks.sh, dev_eval.py, demo_api.py (optional local API)
+frontend/              optional React interface (never on the evaluator path)
+docs/                  architecture/ decisions/ security/ evaluation/ api-contract/ frontend/ brief/ team/
+organiser-toolkit/     official kit, git-ignored, never modified
 ```
+
+## Team
+
+CLINVEIL is built by team **APEX** for Yugaantar DevForge, Track 3: Secret Wards. Third-party portions and their
+licences are listed below.
 
 ## Copyright and licensing
 

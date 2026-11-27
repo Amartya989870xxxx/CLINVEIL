@@ -96,3 +96,6 @@ Thumbs.db
 !.vscode/extensions.json
 *.code-workspace
 .antigravity/
+
+# frontend data-display components are code, not data
+!frontend/src/components/data/

@@ -1,0 +1,175 @@
+.page { min-height: 100vh; display: flex; flex-direction: column; }
+.wrap { width: 100%; max-width: 1120px; margin: 0 auto; padding: 0 var(--s-8); }
+
+.bar { position: sticky; top: 0; z-index: 20; background: var(--bg); border-bottom: 1px solid var(--rule); }
+.barInner { display: flex; align-items: center; gap: var(--s-6); height: 68px; }
+.brand { display: inline-flex; align-items: center; gap: var(--s-3); text-decoration: none; color: var(--ink); }
+.word { font-weight: 600; letter-spacing: 0.14em; font-size: var(--text-sm); }
+.nav { position: relative; margin-left: auto; align-self: stretch; display: flex; }
+.links { display: flex; align-items: center; gap: var(--s-5); list-style: none; padding: 0; margin: 0; }
+.links a { color: var(--ink-2); text-decoration: none; font-size: var(--text-sm); transition: color var(--t-slide) var(--ease); }
+.links a:hover, .links a[aria-current] { color: var(--ink); }
+/* accent underline that slides to the section being read; sits on the bar's bottom rule */
+.indicator {
+  position: absolute; left: 0; bottom: -1px; height: 2px; width: 0; background: var(--accent); border-radius: 1px;
+  pointer-events: none; opacity: 0;
+  transition: transform var(--t-slide) var(--ease), width var(--t-slide) var(--ease), opacity var(--t-slide) var(--ease);
+}
+.section { scroll-margin-top: 68px; }
+.section h2:focus { outline: none; }
+.barRight { display: flex; align-items: center; gap: var(--s-4); }
+
+.hero { padding: var(--s-16) 0 var(--s-12); }
+.heroInner { display: grid; gap: var(--s-6); }
+.title {
+  font-family: var(--font-serif); font-weight: 400; font-size: clamp(2.6rem, 1.6rem + 3.6vw, 4.6rem);
+  line-height: 1.04; letter-spacing: -0.025em; max-width: 15ch;
+}
+.title em { color: var(--accent-ink); }
+:global([data-theme="dark"]) .title em { color: var(--accent); }
+.lead { font-size: var(--text-lg); line-height: 1.6; color: var(--ink-2); max-width: 58ch; }
+.actions { display: flex; flex-wrap: wrap; gap: var(--s-3); }
+.facts { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-6); list-style: none; padding: 0; margin: 0; }
+.facts li { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--ink-2); }
+.facts svg { color: var(--ink-3); }
+
+.section { padding: var(--s-12) 0; border-top: 1px solid var(--rule); }
+.split { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: var(--s-10); }
+.h2 { font-family: var(--font-serif); font-weight: 400; font-size: var(--text-2xl); line-height: 1.15; letter-spacing: -0.015em; }
+.body { display: grid; gap: var(--s-4); color: var(--ink-2); font-size: var(--text-md); line-height: 1.65; max-width: 62ch; }
+.body strong { color: var(--ink); font-weight: 500; }
+
+.steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-8); }
+.steps li { display: grid; gap: var(--s-2); align-content: start; border-top: 1px solid var(--rule-strong); padding-top: var(--s-4); }
+.num { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--ink-3); }
+.stepTitle { font-family: var(--font-serif); font-size: var(--text-xl); }
+.stepText { color: var(--ink-2); font-size: var(--text-sm); line-height: 1.6; }
+
+.excerpt { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border: 1px solid var(--rule); border-radius: var(--radius-md); overflow: hidden; background: var(--surface); }
+.col { min-width: 0; }
+.col + .col { border-left: 1px solid var(--rule); }
+.colHead { padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--rule); font-size: var(--text-xs); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--ink-2); }
+.lines { margin: 0; padding: var(--s-4); font-family: var(--font-mono); font-size: 13px; line-height: 1.9; white-space: pre-wrap; word-break: break-word; }
+.caption { margin-top: var(--s-3); font-size: var(--text-sm); color: var(--ink-2); display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--s-3); }
+
+.foot { margin-top: auto; border-top: 1px solid var(--rule); background: var(--surface-sunken); }
+.footGrid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: var(--s-8); padding-top: var(--s-10); padding-bottom: var(--s-8); }
+.footBrand { display: grid; gap: var(--s-3); align-content: start; }
+.footBrand p { color: var(--ink-2); font-size: var(--text-sm); max-width: 32ch; }
+.footCol { display: grid; gap: var(--s-2); align-content: start; font-size: var(--text-sm); }
+.footCol a { color: var(--ink-2); text-decoration: none; width: fit-content; }
+.footCol a:hover { color: var(--ink); text-decoration: underline; }
+.footHead { font-size: var(--text-xs); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--ink); font-weight: 500; margin-bottom: var(--s-1); }
+.footBase {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--s-2) var(--s-6);
+  padding-top: var(--s-4); padding-bottom: var(--s-6); border-top: 1px solid var(--rule); font-size: var(--text-xs); color: var(--ink-2);
+}
+
+/* hero schematic: what goes in, what comes out */
+.heroGrid { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: var(--s-12); align-items: center; }
+.schematic {
+  margin: 0; display: grid; gap: 0; border: 1px solid var(--rule); border-radius: var(--radius-md);
+  background: var(--surface); box-shadow: var(--shadow-raise);
+  animation: clv-enter 620ms var(--ease) 200ms both;
+}
+.schemBlock { padding: var(--s-5); display: grid; gap: var(--s-3); }
+.schemBlock ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s-2); }
+.schemBlock li { display: grid; grid-template-columns: 46px 1fr; gap: var(--s-3); align-items: baseline; font-size: var(--text-sm); color: var(--ink); }
+.schemLabel { font-size: var(--text-xs); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--ink-2); }
+.tag {
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em; color: var(--ink-2); text-align: center;
+  border: 1px solid var(--rule-strong); border-radius: 3px; padding: 1px 0;
+}
+.schemOut { background: var(--surface-2); border-radius: 0 0 var(--radius-md) var(--radius-md); }
+.schemOut .tag { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.schemAside { display: flex; gap: var(--s-2); align-items: center; font-size: var(--text-xs); color: var(--ink-2); padding-top: var(--s-1); }
+.schemCore { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: var(--s-3); padding: 0 var(--s-5); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); height: 56px; }
+.schemLine { height: 0; border-top: 1px dashed var(--rule-strong); }
+.schemEngine { display: inline-flex; align-items: center; gap: var(--s-2); font-weight: 600; letter-spacing: 0.14em; font-size: var(--text-xs); color: var(--ink); }
+.schemSteps { font-weight: 400; letter-spacing: 0; color: var(--ink-2); font-family: var(--font-serif); font-style: italic; font-size: var(--text-sm); margin-left: var(--s-1); }
+
+@media (max-width: 860px) {
+  .nav { display: none; }
+  .barRight { margin-left: auto; }
+  .split, .steps, .excerpt, .heroGrid { grid-template-columns: minmax(0, 1fr); }
+  .heroGrid { gap: var(--s-10); }
+  .footGrid { grid-template-columns: 1fr 1fr; }
+  .col + .col { border-left: 0; border-top: 1px solid var(--rule); }
+  .hero { padding: var(--s-10) 0; }
+}
+@media (max-width: 520px) {
+  .wrap { padding: 0 var(--s-5); }
+  .barRight .themeCtl { display: none; }
+}
+
+/* ---------- motion ---------- */
+/* hero rises in on load, one line after another */
+.heroInner > * { animation: clv-enter 520ms var(--ease) both; }
+.heroInner > :nth-child(2) { animation-delay: 60ms; }
+.heroInner > :nth-child(3) { animation-delay: 120ms; }
+.heroInner > :nth-child(4) { animation-delay: 180ms; }
+.heroInner > :nth-child(5) { animation-delay: 240ms; }
+
+/* sections fade up as they scroll into view. Hidden only once the observer is running (data-reveal on the page),
+   and never under reduced motion, so content can't get stuck invisible. */
+@media (prefers-reduced-motion: no-preference) {
+  .page[data-reveal] .reveal { opacity: 0; transform: translateY(16px); transition: opacity 560ms var(--ease), transform 560ms var(--ease); }
+  .page[data-reveal] .reveal[data-shown] { opacity: 1; transform: none; }
+}
+
+/* the bar gains a soft edge once the page is scrolled */
+.bar { transition: box-shadow var(--t-enter) var(--ease); }
+.bar[data-scrolled] { box-shadow: 0 1px 12px rgb(0 0 0 / 0.06); }
+
+/* keyframes are local to each CSS module (a module cannot reference global keyframes by name) */
+@keyframes clv-enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .heroInner > *, .schematic { animation: none; } }
+
+/* ---------- crazier motion ---------- */
+.progress {
+  position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent);
+  transform-origin: left center; transform: scaleX(0); pointer-events: none;
+}
+.heroInner > h1 { animation: none; }
+.title em { display: inline; }
+
+/* how it works: steps on the left, schematic on the right */
+.howGrid { display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 5fr); gap: var(--s-12); align-items: start; }
+.howGrid .steps { grid-template-columns: minmax(0, 1fr); gap: var(--s-6); }
+.howGrid .schematic { animation: none; position: sticky; top: 96px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* steps cascade in when the section is revealed */
+  .page[data-reveal] .reveal .steps li { opacity: 0; transform: translateX(-18px); transition: opacity 600ms var(--ease), transform 600ms var(--ease); }
+  .page[data-reveal] .reveal[data-shown] .steps li { opacity: 1; transform: none; }
+  .page[data-reveal] .reveal[data-shown] .steps li:nth-child(2) { transition-delay: 140ms; }
+  .page[data-reveal] .reveal[data-shown] .steps li:nth-child(3) { transition-delay: 280ms; }
+  /* step rule draws across */
+  .steps li { position: relative; border-top-color: transparent !important; }
+  .steps li::before { content: ""; position: absolute; top: -1px; left: 0; right: 0; height: 1px; background: var(--rule-strong); transform-origin: left; transform: scaleX(0); transition: transform 900ms var(--ease) 200ms; }
+  .page[data-reveal] .reveal[data-shown] .steps li::before, .page:not([data-reveal]) .steps li::before { transform: none; }
+
+  /* schematic rows light up in sequence, then the packet runs through CLINVEIL */
+  .page[data-reveal] .reveal .schematic li { opacity: 0.25; transition: opacity 420ms var(--ease); }
+  .page[data-reveal] .reveal[data-shown] .schematic li { opacity: 1; transition-delay: calc(300ms + var(--i) * 150ms); }
+  .page[data-reveal] .reveal[data-shown] .schematic .tag { animation: tag-flash 900ms var(--ease) both; animation-delay: calc(300ms + var(--i) * 150ms); }
+  .page[data-reveal] .reveal[data-shown] .packet { animation: packet 1600ms cubic-bezier(0.65, 0, 0.35, 1) 900ms 3 both; }
+  .schematic li:hover .tag { border-color: var(--accent); color: var(--accent-ink); }
+}
+.schemLine { position: relative; }
+.packet { position: absolute; top: -3px; left: 0; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); opacity: 0; }
+@keyframes packet { 0% { left: 0; opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } 100% { left: calc(100% - 6px); opacity: 0; } }
+@keyframes tag-flash { 0% { background: transparent; } 35% { background: var(--accent-wash); border-color: var(--accent); } 100% { background: transparent; } }
+.schematic li { transition: color var(--t-fast) var(--ease); }
+.tag { transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+
+@media (max-width: 860px) {
+  .howGrid { grid-template-columns: minmax(0, 1fr); gap: var(--s-10); }
+  .howGrid .schematic { position: static; }
+}
+
+/* every CLINVEIL brand mark is a link to the first page */
+.schemEngine { text-decoration: none; border-radius: var(--radius-sm); padding: 4px 8px; margin: -4px -8px; transition: background-color var(--t-fast) var(--ease); }
+.schemEngine:hover { background: var(--surface-2); color: var(--ink); }
+.baseHome { color: inherit; text-decoration: none; font-weight: 600; letter-spacing: 0.08em; }
+.baseHome:hover { color: var(--ink); text-decoration: underline; }
