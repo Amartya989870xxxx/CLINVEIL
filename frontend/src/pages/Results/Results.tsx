@@ -29,7 +29,7 @@ function Counts({ sum }: { sum: Summary }) {
         { label: "Records processed", value: fmtInt(c.records_processed) },
         { label: "Personal details found", value: fmtInt(c.identifiers_detected) },
         { label: "Records linked", value: c.records_linked ? fmtInt(c.records_linked) : null, missing: "None linked", hint: "records sharing a keyed pseudonym with at least one other record" },
-        { label: "Records generalised", value: fmtInt(c.records_generalized), hint: "birth dates only, today" },
+        { label: "Records generalised", value: fmtInt(c.records_generalized), hint: "records with at least one generalised value, such as a shifted date, an age band or a PIN prefix" },
         { label: "Processing time", value: sum.timing ? fmtSeconds(sum.timing.seconds) : null },
       ]}
     />
