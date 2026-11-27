@@ -170,6 +170,41 @@ output/
 
 A `logs/` folder holds PII-free detection counts.
 
+### Example
+
+Two synthetic input files for one patient, a CSV row and a Hinglish OPD note:
+
+```text
+registration.csv
+uhid,patient_name,age,gender,phone,aadhaar,dob,pincode,visit_date,diagnosis
+UH-204518,Ramesh Kumar Verma,47,M,9876543210,2345 6789 0123,1979-03-14,226010,2026-05-12,Type 2 diabetes mellitus
+
+opd_note.txt
+OPD note 2026-05-19. Patient Ramesh Kumar Verma (UHID UH-204518), mob 9876543210. Pt ko 3 din se bukhar hai.
+Metformin 500 mg BD continued. BP 138/86.
+```
+
+Actual engine output (`sanitized/` and `records.jsonl`):
+
+```text
+registration.csv
+uhid,patient_name,age,gender,phone,aadhaar,dob,pincode,visit_date,diagnosis
+PSN-CW38W3,[NAME],45-49,M,[PHONE],[AADHAAR],[DOB],[PIN],2026-06-08,Type 2 diabetes mellitus
+
+opd_note.txt
+OPD note 2026-06-15. Patient [NAME] (UHID PSN-CW38W3), mob [PHONE]. Pt ko 3 din se bukhar hai.
+Metformin 500 mg BD continued. BP 138/86.
+
+records.jsonl
+{"file": "sanitized/opd_note.txt", "loc": "doc", "patient": "PSN-CW38W3"}
+{"file": "sanitized/registration.csv", "loc": "row:0", "patient": "PSN-CW38W3"}
+```
+
+Both records are linked to one pseudonym. Both dates moved by the same keyed offset, so the 7-day interval is
+kept. The age became a 5-year band. The PIN was suppressed because fewer than 5 records share its prefix.
+Medicines, doses, vitals and the diagnosis are unchanged. The pseudonym and the date offset depend on
+`RAKSHA_SECRET`, so another secret gives different values.
+
 ## Testing and results
 
 ```bash
