@@ -20,10 +20,21 @@ from clinveil.linking.models import (
     RecordEvidence,
     RecordKey,
 )
-from clinveil.linking.normalize import best_name_grade, id_type, is_authoritative_core
+from clinveil.linking.normalize import (
+    _initial_matches,
+    _tokens_variant_equal,
+    best_name_grade,
+    compare_names,
+    id_type,
+    is_authoritative_core,
+)
 
 _FULL_MATCH_GRADES = frozenset({NameGrade.EXACT_FULL, NameGrade.VARIANT_FULL, NameGrade.ABBREVIATED_FULL})
 _COMPATIBLE_GRADES = _FULL_MATCH_GRADES | frozenset({NameGrade.FIRST_ONLY_MATCH})
+#: Independent non-DOB-derived corroborators permitted to pair with exact DOB for R7 re-registration (F6).
+_REREG_INDEPENDENT_CORROBS = frozenset({"corrob_phone", "corrob_relative", "corrob_insurance", "corrob_email"})
+#: Reason tag of a Tier-2a decision: the MRN match was verified inside one reliably known hospital.
+VERIFIED_SAME_HOSPITAL = "verified_same_hospital"
 
 
 @dataclass(slots=True)
@@ -36,6 +47,8 @@ class ClusterProfile:
     reliable_hospitals: set[str] = field(default_factory=set)
     has_non_lab_hospital: bool = False
     is_external_lab_only: bool = True
+    #: True ONLY when every member is an explicitly identified external pathology/lab document (F1).
+    is_true_external_lab_only: bool = True
     aadhaar: set[str] = field(default_factory=set, repr=False)
     abha_number: set[str] = field(default_factory=set, repr=False)
     abha_address: set[str] = field(default_factory=set, repr=False)
@@ -77,6 +90,7 @@ class ClusterProfile:
             hospitals={ev.hospital} if (ev.hospital and not ev.is_external_lab) else set(),
             has_non_lab_hospital=bool(ev.hospital and not ev.is_external_lab),
             is_external_lab_only=ev.is_external_lab or ev.hospital is None,
+            is_true_external_lab_only=ev.is_external_lab,
             aadhaar=set(ev.aadhaar),
             abha_number=set(ev.abha_number),
             abha_address=set(ev.abha_address),
@@ -120,6 +134,7 @@ class ClusterProfile:
         self.reliable_hospitals |= other.reliable_hospitals
         self.has_non_lab_hospital = self.has_non_lab_hospital or other.has_non_lab_hospital
         self.is_external_lab_only = self.is_external_lab_only and other.is_external_lab_only
+        self.is_true_external_lab_only = self.is_true_external_lab_only and other.is_true_external_lab_only
         self.aadhaar |= other.aadhaar
         self.abha_number |= other.abha_number
         self.abha_address |= other.abha_address
@@ -172,6 +187,15 @@ def _dob_matches(a: set[DateEvidence], b: set[DateEvidence]) -> bool:
     return any(da.matches(db) for da in a for db in b)
 
 
+def _exact_dob_matches(a: set[DateEvidence], b: set[DateEvidence]) -> bool:
+    """Unambiguous exact DOB match for R7 re-registration (rejects swapped slash dates 03/04 vs 04/03, F6)."""
+    return any(
+        da.primary == db.primary or ((da.alternate is None or db.alternate is None) and da.matches(db))
+        for da in a
+        for db in b
+    )
+
+
 def _age_min_diff(a: set[int], b: set[int]) -> int:
     return min(abs(x - y) for x in a for y in b)
 
@@ -188,8 +212,17 @@ def _authoritative_ids_by_scope(c: ClusterProfile) -> dict[str, set[str]]:
     """Known-issuer scope -> the patient's own MRN/UHID keys (``type:digits``; admissions/visits excluded).
 
     Compared by type + last digit run without leading zeros, so ``UHID-0045123`` and
-    ``UHID/45123`` are the same key (the veto errs towards NOT firing).
+    ``UHID/45123`` are the same key (the veto errs towards NOT firing). For unreliable-stem
+    documents carrying a distinctive issuer prefix (``KSR-26-000111`` in ``export_jan.csv``),
+    also keys by ``issuer_pfx:<type>`` so distinct same-issuer UHIDs across generic filenames
+    still trigger R7 (F6).
+
+    The issuer-prefix key is recorded for EVERY scope, reliable hospital or not (Phase 3.3
+    PASS1-NEW-5): ``KSR-26-004417`` from ``kestrel_hospital/…`` and ``KSR-26-004981`` from an
+    ``export_jan.csv`` share the issuer ``pfx_ksr`` even though their file scopes differ. This key
+    is only ever used to VETO (two different numbers from one issuer); it never creates a match.
     """
+    distinctive_mrns = {m for m, dist in c.raw_mrns if dist}
     out: dict[str, set[str]] = {}
     for scope, canon in c.local_ids:
         if scope == "unscoped":
@@ -199,12 +232,39 @@ def _authoritative_ids_by_scope(c: ClusterProfile) -> dict[str, set[str]]:
         key = f"{t}:{core}"
         if is_authoritative_core(key):
             out.setdefault(scope, set()).add(key)
+            if t.startswith("pfx_") and canon in distinctive_mrns:
+                out.setdefault(f"issuer_pfx:{t}", set()).add(key)
     return out
 
 
 def _distinct_mrns_same_issuer(a: ClusterProfile, b: ClusterProfile) -> bool:
     sa, sb = _authoritative_ids_by_scope(a), _authoritative_ids_by_scope(b)
     return any(sa[s].isdisjoint(sb[s]) for s in sa.keys() & sb.keys())
+
+
+def _full_names_have_any_conflict(
+    fa: tuple[NameEvidence, ...],
+    fb: tuple[NameEvidence, ...],
+    *,
+    allow_phonetic: bool = False,
+) -> bool:
+    """Complete-linkage full-name check (F2): an abbreviated name (``N. Vermeer``) inside a
+    cluster must NEVER override a concrete full-name conflict (``Nolan Vermeer`` vs ``Nathan Vermeer``).
+
+    When the clusters already share an ``EXACT_FULL`` or ``VARIANT_FULL`` concrete name match,
+    an additional spelling/transliteration variant already merged into the cluster via a strong ID
+    (phonetically compatible as a whole name) does not cause a false split; any phonetically
+    incompatible full name still vetoes the merge.
+    """
+    best = best_name_grade(fa, fb)
+    has_concrete_match = best in (NameGrade.EXACT_FULL, NameGrade.VARIANT_FULL)
+    for na in fa:
+        for nb in fb:
+            if compare_names(na, nb) is NameGrade.CONFLICT:
+                if (allow_phonetic or has_concrete_match) and _names_phonetically_compatible([na], [nb]):
+                    continue
+                return True
+    return False
 
 
 def _complete_linkage_conflicts(a: ClusterProfile, b: ClusterProfile) -> list[str]:
@@ -226,46 +286,120 @@ def _complete_linkage_conflicts(a: ClusterProfile, b: ClusterProfile) -> list[st
     return out
 
 
+def _fragment_contradicts(names: list[NameEvidence], full_other: tuple[NameEvidence, ...]) -> bool:
+    """A single-token patient name on one side conflicts (also phonetically) with a full name on the other."""
+    return any(
+        compare_names(s, f) is NameGrade.CONFLICT and not _names_phonetically_compatible([s], [f])
+        for s in names
+        if s.is_single_token and not s.is_initial_only
+        for f in full_other
+    )
+
+
 def _full_names(names: list[NameEvidence]) -> tuple[NameEvidence, ...]:
     return tuple(n for n in names if not n.is_single_token and not n.is_initial_only)
 
 
-def _names_phonetically_compatible(a: list[NameEvidence], b: list[NameEvidence]) -> bool:
-    """Coarse consonant-skeleton compatibility used ONLY when an MRN or global ID already matches.
+def _translit_u_e_skeleton(strict_tok: str, skel_tok: str) -> str:
+    """Fold silent trailing ``-e`` and English short ``u`` (transliterated as Devanagari ``अ``/``a``)
+    while keeping ``i``, ``e``, ``o`` intact (so ``Dunmore`` == ``डनमोर`` -> ``dnmor``)."""
+    vowels = set("aeiou")
+    has_silent_e = len(strict_tok) >= 5 and strict_tok.endswith("e") and strict_tok[-2] not in vowels
+    s = strict_tok[:-1] if has_silent_e else strict_tok
+    if len(s) <= 2:
+        return skel_tok
+    out = [s[0]]
+    for i in range(1, len(s)):
+        ch = s[i]
+        if ch in ("a", "u") and i + 1 < len(s) and s[i - 1] not in vowels and s[i + 1] not in vowels:
+            continue
+        out.append(ch)
+    return "".join(out)
 
-    Tolerates spelling variants of the same person sharing a hospital-scoped MRN (e.g.
-    ``Zarina Qureshi`` vs ``Zarna Qureshi``) while still vetoing genuinely different people
-    (``Rohan`` vs ``Mohan``, ``Sunita`` vs ``Anita``).
+
+def _tokens_phonetically_compatible(sa: str, ka: str, sb: str, kb: str) -> bool:
+    """Token-level phonetic check under a strong ID match that preserves primary vowel distinctions (NEW-4).
+
+    Accepts exact/schwa variants (``Kamlesh``/``Kamalesh``), cross-script short-``u``/silent-``e``
+    transliterations (``Dunmore``/``डनमोर``), ``-e``/``-eya`` suffix variants (``Pande``/``Pandeya``),
+    and single unstressed medial vowel elision in 5+ char tokens with matching consonant skeleton
+    (``Zarina``/``Zarna``), while rejecting vowel substitutions between distinct Indian names
+    (``Kiran``/``Karan``, ``Alok``/``Alka``, ``Sunil``/``Sonal``).
     """
     from clinveil.detection.translit import name_key
 
-    def keys(ev: NameEvidence) -> tuple[str, ...]:
-        return tuple(name_key(t) for t in ev.strict_tokens if name_key(t))
+    if _tokens_variant_equal(sa, ka, sb, kb):
+        return True
+    nka, nkb = name_key(sa), name_key(sb)
+    if not nka or not nkb:
+        return False
+    if nka == nkb and len(nka) >= 4 and _translit_u_e_skeleton(sa, ka) == _translit_u_e_skeleton(sb, kb):
+        return True
+    # Suffix variant on >=4-char shared root (e.g. "pande" vs "pandeya")
+    short_s, long_s = (sa, sb) if len(sa) <= len(sb) else (sb, sa)
+    if len(short_s) >= 4 and long_s.startswith(short_s) and long_s[len(short_s) :] in ("a", "ya", "ia", "iya"):
+        return True
+    # Single medial vowel elision in a >=5-char token with identical >=3-consonant skeleton ("jarina" vs "jarna")
+    if nka == nkb and len(nka) >= 3 and len(long_s) - len(short_s) == 1 and len(short_s) >= 5:
+        vowels = set("aeiou")
+        for i in range(1, len(long_s) - 1):
+            if long_s[i] in vowels and (long_s[:i] + long_s[i + 1 :]) == short_s:
+                return True
+    return False
 
+
+def _names_phonetically_compatible(a: list[NameEvidence], b: list[NameEvidence]) -> bool:
+    """Whole-name phonetic compatibility used ONLY when an MRN or global ID already matches (NEW-4).
+
+    Tolerates transliteration, schwa, middle-name omission, and 1-char medial vowel elision
+    (``Zarina Qureshi`` vs ``Zarna Qureshi``) while vetoing distinct given names (``Kiran`` vs
+    ``Karan``, ``Alok`` vs ``Alka``, ``Sunil`` vs ``Sonal``) and conflicting middle names
+    (``Anil Kumar Solanki`` vs ``Anil Prakash Solanki``).
+    """
     for na in a:
-        ka = keys(na)
-        if not ka:
+        if na.is_initial_only:
             continue
+        sa, ka = na.strict_tokens, na.skeleton_tokens
         for nb in b:
-            kb = keys(nb)
-            if not kb:
+            if nb.is_initial_only:
                 continue
-            if ka == kb:
+            if compare_names(na, nb) in _COMPATIBLE_GRADES:
                 return True
-            if len(ka) == 2 and len(kb) == 2 and ka == (kb[1], kb[0]):
-                return True
-            if len(ka) >= 2 and len(kb) >= 2 and ka[0] == kb[0] and ka[-1] == kb[-1]:
-                return True
-            if (len(ka) == 1 and ka[0] in kb) or (len(kb) == 1 and kb[0] in ka):
-                return True
-            # Same-position phonetic match + other token prefix match (e.g. "Pande" vs "Pandeya")
-            if len(ka) == len(kb) and len(ka) >= 2:
-                exact = sum(x == y for x, y in zip(ka, kb, strict=True))
-                near = sum(
-                    x == y or (len(x) >= 3 and len(y) >= 3 and (x.startswith(y) or y.startswith(x)))
-                    for x, y in zip(ka, kb, strict=True)
-                )
-                if exact >= 1 and near == len(ka):
+            sb, kb = nb.strict_tokens, nb.skeleton_tokens
+            if len(sa) >= 2 and len(sb) >= 2:
+                if len(sa) == len(sb) and all(
+                    _tokens_phonetically_compatible(sa[i], ka[i], sb[i], kb[i])
+                    or _initial_matches(na, i, nb, i)
+                    or _initial_matches(nb, i, na, i)
+                    for i in range(len(sa))
+                ):
+                    return True
+                if (
+                    len(sa) == 2
+                    and len(sb) == 2
+                    and _tokens_phonetically_compatible(sa[0], ka[0], sb[1], kb[1])
+                    and _tokens_phonetically_compatible(sa[1], ka[1], sb[0], kb[0])
+                ):
+                    return True
+                # Middle-name omission ONLY when token counts differ (never when middle tokens conflict, NEW-4)
+                if (
+                    len(sa) != len(sb)
+                    and _tokens_phonetically_compatible(sa[0], ka[0], sb[0], kb[0])
+                    and _tokens_phonetically_compatible(sa[-1], ka[-1], sb[-1], kb[-1])
+                ):
+                    return True
+            elif len(sa) == 1 or len(sb) == 1:
+                single, other = (na, nb) if len(sa) == 1 else (nb, na)
+                ts, tk = single.strict_tokens[0], single.skeleton_tokens[0]
+                if (
+                    len(ts) >= 2
+                    and single.identifying_strict
+                    and any(
+                        _tokens_phonetically_compatible(ts, tk, other.strict_tokens[i], other.skeleton_tokens[i])
+                        for i, st in enumerate(other.strict_tokens)
+                        if st in other.identifying_strict or i == 0
+                    )
+                ):
                     return True
     return False
 
@@ -276,6 +410,7 @@ def hard_conflicts(
     *,
     has_global_match: bool = False,
     has_scoped_id_match: bool = False,
+    allow_phonetic_name: bool = False,
 ) -> tuple[str, ...]:
     """Return all conflict codes between clusters ``a`` and ``b``."""
     conflicts: list[str] = []
@@ -289,6 +424,16 @@ def hard_conflicts(
         conflicts.append("conflict_aadhaar")
     if a.abha_number and b.abha_number and a.abha_number.isdisjoint(b.abha_number):
         conflicts.append("conflict_abha")
+    # One person may hold several ABHA PHR addresses: different addresses only contradict when
+    # no validated Aadhaar / ABHA number is shared (Phase 3.3 NEW-7B).
+    if (
+        a.abha_address
+        and b.abha_address
+        and a.abha_address.isdisjoint(b.abha_address)
+        and a.aadhaar.isdisjoint(b.aadhaar)
+        and a.abha_number.isdisjoint(b.abha_number)
+    ):
+        conflicts.append("conflict_abha_address")
     if a.pan and b.pan and a.pan.isdisjoint(b.pan):
         conflicts.append("conflict_pan")
     # 2. Incompatible explicit gender
@@ -302,31 +447,38 @@ def hard_conflicts(
     # 4. Large age discrepancy (> 3 years; allows multi-year encounter drift)
     if a.ages and b.ages and _age_min_diff(a.ages, b.ages) > 3:
         conflicts.append("conflict_age")
-    # 5. Incompatible patient names
+    # 5. Incompatible patient names (complete-linkage across all full-name pairs, F2)
     fa, fb = _full_names(a.patient_names), _full_names(b.patient_names)
+    phonetic_ok = has_global_match or has_scoped_id_match or allow_phonetic_name
     if has_global_match and a.patient_names and b.patient_names:
         # Even with a person-unique ID match, names must be phonetically compatible as WHOLE names
-        # (given name included). A shared surname alone no longer passes (Phase 3.1, R4); spelling,
-        # script, order and missing-given-name variants still do. When both sides have full names,
-        # only full names decide: a surname-only fragment cannot vouch for a different given name.
-        na, nb = (list(fa), list(fb)) if (fa and fb) else (a.patient_names, b.patient_names)
-        if best_name_grade(tuple(na), tuple(nb)) is NameGrade.CONFLICT and not _names_phonetically_compatible(na, nb):
-            conflicts.append("conflict_name_disjoint")
+        # (given name included). When both sides have full names, every pair of full names must be
+        # compatible so an abbreviated name cannot override a concrete full-name conflict (R4/F2).
+        if fa and fb:
+            if _full_names_have_any_conflict(fa, fb, allow_phonetic=True):
+                conflicts.append("conflict_name_disjoint")
+        else:
+            if best_name_grade(tuple(a.patient_names), tuple(b.patient_names)) is NameGrade.CONFLICT and not (
+                _names_phonetically_compatible(a.patient_names, b.patient_names)
+            ):
+                conflicts.append("conflict_name_disjoint")
     elif fa and fb:
-        grade = best_name_grade(fa, fb)
-        if grade is NameGrade.CONFLICT:
-            if has_scoped_id_match:
-                if not _names_phonetically_compatible(a.patient_names, b.patient_names):
-                    conflicts.append("conflict_name")
-            else:
-                conflicts.append("conflict_name")
+        if _full_names_have_any_conflict(fa, fb, allow_phonetic=phonetic_ok):
+            conflicts.append("conflict_name")
     elif a.patient_names and b.patient_names and not has_global_match:
         grade = best_name_grade(tuple(a.patient_names), tuple(b.patient_names))
         if grade is NameGrade.CONFLICT and not (
-            has_scoped_id_match and _names_phonetically_compatible(a.patient_names, b.patient_names)
+            phonetic_ok and _names_phonetically_compatible(a.patient_names, b.patient_names)
         ):
             conflicts.append("conflict_name")
-    # 6. Homonym vetoes (apply when there is NO validated global ID or scoped hospital ID match)
+    # 5b. A single-token name (fragment such as "Nolan") that contradicts EVERY reading of a full name
+    #     on the other side ("Nathan Vermeer") is a contradiction too: otherwise a cluster could hold
+    #     both once full names on each side agree with each other (complete linkage, Phase 3.3).
+    if not any(c.startswith("conflict_name") for c in conflicts) and (
+        _fragment_contradicts(a.patient_names, fb) or _fragment_contradicts(b.patient_names, fa)
+    ):
+        conflicts.append("conflict_name_fragment")
+    # 6. Homonym vetoes (apply unless there is a validated global ID or VERIFIED same-hospital ID match, F1)
     if not has_global_match and not has_scoped_id_match:
         if a.relative_names and b.relative_names:
             rgrade = best_name_grade(tuple(a.relative_names), tuple(b.relative_names))
@@ -339,7 +491,49 @@ def hard_conflicts(
     return tuple(conflicts)
 
 
+def strong_pair_conflicts(a: ClusterProfile, b: ClusterProfile, *, via_local_id: bool = False) -> tuple[str, ...]:
+    """Contradictions that forbid ``a`` and ``b`` from EVER sharing a cluster, even when a
+    validated identifier (directly or through a bridge record) links them (Phase 3.3 PASS1-NEW-6).
+
+    Homonym vetoes (village, relative name, district) are relaxed exactly as they are for a direct
+    validated-ID match; person-unique ID, gender, DOB, age and whole-name contradictions remain.
+    ``via_local_id``: the strong path between ``a`` and ``b`` uses a verified same-hospital local ID
+    (not validated global IDs alone), so R7 also applies unless ``a`` and ``b`` share a validated
+    global ID themselves: a chain of shared OPD numbers cannot override two UHIDs (P33-PASS3-F2).
+    """
+    conflicts = hard_conflicts(a, b, has_global_match=True)
+    if via_local_id and not shared_global_ids(a, b) and r7_conflict(a, b):
+        conflicts = (*conflicts, "conflict_scoped_mrn")
+    return conflicts
+
+
+def is_weak_edge(dec: PairDecision) -> bool:
+    """An identifier edge that does NOT prove identity on its own: an unverified-scope, prefixed or
+    external-lab MRN match (Tier 2b). Validated global IDs and verified same-hospital MRNs are strong."""
+    return dec.strength is MatchStrength.STRONG_SCOPED_ID and VERIFIED_SAME_HOSPITAL not in dec.reasons
+
+
 # --------------------------------------------------------------------------- scoped MRN matching
+def _mrn_reliable_hospitals(c: ClusterProfile, canon: str) -> set[str]:
+    """Reliable hospital issuers that actually produced ``canon`` inside cluster ``c`` (F1)."""
+    return {
+        scope[5:]
+        for scope, m in c.local_ids
+        if m == canon and scope.startswith("hosp:") and scope[5:] in c.reliable_hospitals
+    }
+
+
+def _mrn_cross_hospital_disjoint(a: ClusterProfile, b: ClusterProfile, canon: str) -> bool:
+    """True if ``canon`` came from two DIFFERENT reliable hospitals on ``a`` and ``b`` (F1).
+
+    Preserves per-MRN provenance inside multi-hospital clusters so Hospital A's MRN can never
+    match Hospital B's identical MRN merely because the cluster also has a record at Hospital B.
+    """
+    ha = _mrn_reliable_hospitals(a, canon)
+    hb = _mrn_reliable_hospitals(b, canon)
+    return bool(ha and hb and ha.isdisjoint(hb))
+
+
 def shared_global_ids(a: ClusterProfile, b: ClusterProfile) -> list[str]:
     reasons: list[str] = []
     if a.aadhaar & b.aadhaar:
@@ -353,43 +547,61 @@ def shared_global_ids(a: ClusterProfile, b: ClusterProfile) -> list[str]:
     return reasons
 
 
-def shared_scoped_mrns(a: ClusterProfile, b: ClusterProfile, name_grade: NameGrade) -> list[str]:
-    """Check hospital-namespaced MRN/UHID matches while strictly blocking cross-hospital collisions."""
+def shared_scoped_mrns(a: ClusterProfile, b: ClusterProfile, name_grade: NameGrade) -> tuple[list[str], bool]:
+    """Check hospital-namespaced MRN/UHID matches while strictly blocking cross-hospital collisions.
+
+    Returns ``(reasons, verified_same_hospital)``. Only verified same-hospital MRN matches may
+    relax homonym/complete-linkage vetoes; unverified-scope, prefixed-only, or external-lab MRN
+    matches keep homonym, complete-linkage, and R7 distinct-MRN protections active (F1).
+    """
     reasons: list[str] = []
     # Two DIFFERENT reliably known (non-lab) hospitals: a shared MRN string, prefixed or not, is no
     # evidence (R5). A slug merely guessed from a file name is not proof of a different issuer.
     if a.reliable_hospitals and b.reliable_hospitals and a.reliable_hospitals.isdisjoint(b.reliable_hospitals):
-        return reasons
+        return reasons, False
     # Exact same (hospital_scope, canonical_mrn) excluding "unscoped"
     scoped_a = {(s, m) for s, m in a.local_ids if s != "unscoped"}
     scoped_b = {(s, m) for s, m in b.local_ids if s != "unscoped"}
-    if scoped_a & scoped_b:
+    common_scoped = scoped_a & scoped_b
+    if common_scoped:
+        verified = any(
+            s.startswith("hosp:") and s[5:] in (a.reliable_hospitals & b.reliable_hospitals) for s, _ in common_scoped
+        )
         reasons.append("shared_scoped_mrn")
-        return reasons
+        return reasons, verified
     # Same (hospital_scope, digit_core >= 5) excluding "unscoped"
     cores_a = {(s, c) for s, c in a.local_id_cores if s != "unscoped"}
     cores_b = {(s, c) for s, c in b.local_id_cores if s != "unscoped"}
-    if cores_a & cores_b and name_grade is not NameGrade.CONFLICT:
+    common_cores = cores_a & cores_b
+    if common_cores and name_grade is not NameGrade.CONFLICT:
+        verified = any(
+            s.startswith("hosp:") and s[5:] in (a.reliable_hospitals & b.reliable_hospitals) for s, _ in common_cores
+        )
         reasons.append("shared_scoped_mrn_core")
-        return reasons
-    # Distinctive hospital-prefixed MRN (e.g. SUN-26-100101 cited inside an external lab or cross-hospital doc)
+        return reasons, verified
+    # Distinctive hospital-prefixed MRN (e.g. SUN-26-100101 cited inside an external lab or third-party note),
+    # checking per-MRN reliable hospital provenance so multi-hospital clusters cannot bridge issuers (F1).
     dist_a = {m for m, is_dist in a.raw_mrns if is_dist}
     dist_b = {m for m, is_dist in b.raw_mrns if is_dist}
-    if dist_a & dist_b:
+    common_dist = {m for m in (dist_a & dist_b) if not _mrn_cross_hospital_disjoint(a, b, m)}
+    if common_dist:
         reasons.append("shared_prefixed_mrn")
-        return reasons
-    # Generic MRN shared with an external lab / unknown-hospital document (different known
-    # hospitals were already excluded above)
-    raw_a = {m for m, _ in a.raw_mrns}
-    raw_b = {m for m, _ in b.raw_mrns}
-    if raw_a & raw_b:
-        # Require compatible patient name if either side lacks a verified shared hospital scope
-        if name_grade in _COMPATIBLE_GRADES or _names_phonetically_compatible(a.patient_names, b.patient_names):
-            reasons.append("shared_external_mrn_with_name")
-        elif (a.is_external_lab_only or b.is_external_lab_only) and not (a.patient_names and b.patient_names):
-            # External doc quoting the MRN with no conflicting name
-            reasons.append("shared_external_mrn")
-    return reasons
+        return reasons, False
+    # Generic MRN shared between a TRUE external pathology/lab document and a referring hospital
+    # cluster ONLY (never between two external labs lacking a hospital anchor, never two non-lab exports
+    # with unknown or different hospital stems, and never across per-MRN disjoint reliable issuers, F1/NEW-3).
+    if (a.is_true_external_lab_only != b.is_true_external_lab_only) and (
+        a.has_non_lab_hospital or b.has_non_lab_hospital
+    ):
+        raw_a = {m for m, _ in a.raw_mrns}
+        raw_b = {m for m, _ in b.raw_mrns}
+        common_raw = {m for m in (raw_a & raw_b) if not _mrn_cross_hospital_disjoint(a, b, m)}
+        if common_raw:
+            if name_grade in _COMPATIBLE_GRADES or _names_phonetically_compatible(a.patient_names, b.patient_names):
+                reasons.append("shared_external_mrn_with_name")
+            elif not (a.patient_names and b.patient_names):
+                reasons.append("shared_external_mrn")
+    return reasons, False
 
 
 # --------------------------------------------------------------------------- full comparison
@@ -405,12 +617,18 @@ def compare_profiles(
 
     name_grade = best_name_grade(tuple(a.patient_names), tuple(b.patient_names))
     global_reasons = shared_global_ids(a, b)
-    mrn_reasons = shared_scoped_mrns(a, b, name_grade)
+    mrn_reasons, has_verified_scoped = shared_scoped_mrns(a, b, name_grade)
 
     has_global = bool(global_reasons)
     has_scoped = bool(mrn_reasons)
-    conflicts = hard_conflicts(a, b, has_global_match=has_global, has_scoped_id_match=has_scoped)
-    if not has_global and not has_scoped:
+    conflicts = hard_conflicts(
+        a,
+        b,
+        has_global_match=has_global,
+        has_scoped_id_match=has_verified_scoped,
+        allow_phonetic_name=has_scoped,
+    )
+    if not has_global and not has_verified_scoped:
         conflicts = conflicts + tuple(_complete_linkage_conflicts(a, b))
     if conflicts:
         return PairDecision(MatchOutcome.CONFLICT, MatchStrength.NONE, tuple(global_reasons + mrn_reasons), conflicts)
@@ -419,24 +637,31 @@ def compare_profiles(
     if has_global:
         return PairDecision(MatchOutcome.CONFIDENT_MATCH, MatchStrength.STRONG_GLOBAL, tuple(global_reasons), ())
 
-    # Tier 2: Hospital-namespaced local identifier
+    # Different authoritative patient MRNs from the SAME issuer (R7 / F1 / F6). Checked BEFORE
+    # every local-identifier tier, so neither an external/prefixed MRN (Tier 2b) nor a shared
+    # non-authoritative OPD / IPD / admission number at a verified hospital (Tier 2a, P33-PASS3-F2)
+    # can override two different UHIDs. Only a validated global ID (Tier 1) or the DATASET.md
+    # re-registration evidence takes precedence.
+    corroborators = _supporting_corroborators(a, b)
+    if _distinct_mrns_same_issuer(a, b):
+        if not _is_reregistration(a, b, name_grade, corroborators):
+            return PairDecision(MatchOutcome.CONFLICT, MatchStrength.NONE, (), ("conflict_scoped_mrn",))
+        corroborators = [*corroborators, "reregistration_same_issuer"]
+
+    # Tier 2a: Verified same-hospital local identifier
+    if has_verified_scoped:
+        return PairDecision(
+            MatchOutcome.CONFIDENT_MATCH,
+            MatchStrength.STRONG_SCOPED_ID,
+            (*mrn_reasons, VERIFIED_SAME_HOSPITAL),
+            (),
+        )
+
+    # Tier 2b: Unverified-scope / distinctive-prefix / external-lab MRN (all vetoes & R7 already passed)
     if has_scoped:
         return PairDecision(MatchOutcome.CONFIDENT_MATCH, MatchStrength.STRONG_SCOPED_ID, tuple(mrn_reasons), ())
 
     # Tier 3: Corroborated full patient name (requires >= 1 independent corroborator)
-    corroborators = _supporting_corroborators(a, b)
-    # Different authoritative patient MRNs from the SAME issuer (R7). Usually two different patients;
-    # but DATASET.md documents re-registration ("some re-register at the same hospital with a new ID"),
-    # so the only exception is a full-name match with an exact DOB AND another independent corroborator.
-    if _distinct_mrns_same_issuer(a, b):
-        reregistration = (
-            name_grade in (NameGrade.EXACT_FULL, NameGrade.VARIANT_FULL)
-            and "corrob_dob" in corroborators
-            and len(corroborators) >= 2
-        )
-        if not reregistration:
-            return PairDecision(MatchOutcome.CONFLICT, MatchStrength.NONE, (), ("conflict_scoped_mrn",))
-        corroborators = [*corroborators, "reregistration_same_issuer"]
     if name_grade in _FULL_MATCH_GRADES:
         if corroborators:
             return PairDecision(
@@ -465,6 +690,59 @@ def compare_profiles(
     # Phone-only, address-only, relative-only, or unrelated records never merge
     outcome = MatchOutcome.DISTINCT if (a.patient_names and b.patient_names) else MatchOutcome.INSUFFICIENT_EVIDENCE
     return PairDecision(outcome)
+
+
+def _is_reregistration(a: ClusterProfile, b: ClusterProfile, name_grade: NameGrade, corroborators: list[str]) -> bool:
+    """DATASET.md re-registration exception to R7: name + exact DOB + one more independent corroborator."""
+    return (
+        name_grade in (NameGrade.EXACT_FULL, NameGrade.VARIANT_FULL)
+        and _exact_dob_matches(a.dobs, b.dobs)
+        and any(c in _REREG_INDEPENDENT_CORROBS for c in corroborators)
+    )
+
+
+def weak_path_conflicts(a: ClusterProfile, b: ClusterProfile) -> tuple[str, ...]:
+    """Every veto a DIRECT weak MRN match between ``a`` and ``b`` would have to pass (P33-F1).
+
+    Used for two clusters joined only through a path that contains a weak (unverified-scope,
+    prefixed or external-lab MRN) edge. Exactly the :func:`compare_profiles` vetoes of Tier 2b:
+    contradicting IDs, gender, DOB, age, names, homonym vetoes (relative name, village, district),
+    complete-linkage spans and R7 (distinct same-issuer MRNs, re-registration exception). As for a
+    direct weak MRN match, names are compared with transliteration tolerance (``allow_phonetic_name``),
+    so one patient's Devanagari and Latin spellings linked through a lab slip are not split.
+    A shared validated ID or verified same-hospital MRN relaxes the homonym vetoes as it does in
+    :func:`compare_profiles`; R7 is then still enforced unless a validated global ID is shared
+    (P33-PASS3-F2).
+    """
+    if a.ambiguous_doc or b.ambiguous_doc:
+        return ("conflict_ambiguous_doc",)
+    name_grade = best_name_grade(tuple(a.patient_names), tuple(b.patient_names))
+    has_global = bool(shared_global_ids(a, b))
+    _mrn_reasons, has_verified_scoped = shared_scoped_mrns(a, b, name_grade)
+    conflicts = hard_conflicts(
+        a,
+        b,
+        has_global_match=has_global,
+        has_scoped_id_match=has_verified_scoped,
+        allow_phonetic_name=True,
+    )
+    if has_global:
+        return conflicts
+    if not has_verified_scoped:
+        conflicts = conflicts + tuple(_complete_linkage_conflicts(a, b))
+    if r7_conflict(a, b, name_grade):  # also when a verified local ID is shared (P33-PASS3-F2)
+        conflicts = (*conflicts, "conflict_scoped_mrn")
+    return conflicts
+
+
+def r7_conflict(a: ClusterProfile, b: ClusterProfile, name_grade: NameGrade | None = None) -> bool:
+    """R7: different authoritative patient MRNs/UHIDs from the SAME issuer, without the DATASET.md
+    re-registration evidence (name + exact DOB + one more independent corroborator)."""
+    if not _distinct_mrns_same_issuer(a, b):
+        return False
+    if name_grade is None:
+        name_grade = best_name_grade(tuple(a.patient_names), tuple(b.patient_names))
+    return not _is_reregistration(a, b, name_grade, _supporting_corroborators(a, b))
 
 
 def _supporting_corroborators(a: ClusterProfile, b: ClusterProfile) -> list[str]:

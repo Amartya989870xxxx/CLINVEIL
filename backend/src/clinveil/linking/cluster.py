@@ -1,43 +1,53 @@
 """Bounded blocking and 3-stage conflict-aware conservative patient clustering.
 
-Never runs naive transitive connected components:
-* Stage A: Validated global IDs (cluster-level conflict check before every merge).
-* Stage B: Hospital-scoped local IDs (cluster-level conflict check before every merge).
-* Stage C1: Corroborated full-name merges in strict priority order, with ambiguity guard
-  against competing clusters and cluster-level conflict re-verification.
+Never runs naive transitive connected components. Every stage first collects its candidate
+edges between the CURRENT clusters, then resolves each connected group of edges as a whole
+(Phase 3.3, PASS1-NEW-6) instead of merging greedily in key or record order:
+
+* a group merges only if EVERY pair of its clusters is compatible (complete linkage);
+* a cluster that links two mutually incompatible clusters (a partial-evidence "bridge", e.g. a
+  record carrying one person's Aadhaar and another person's PAN) ABSTAINS and stays frozen for
+  all later stages, so its excluded evidence cannot re-enter through a weaker stage;
+* the result depends only on the set of records and their evidence, never on input order,
+  file names or record locators.
+
+Stages:
+* Stage A: Validated global IDs.
+* Stage B: Hospital-scoped local IDs.
+* Stage C1: Corroborated full-name merges (bounded convergence passes).
 * Stage C2: Unique singleton/fragmented attachments (e.g. ``<first name>, W/o <relative>``
   or ``<first name> + <phone>``) attached ONLY when exactly one existing cluster matches
-  with zero conflicts. Never chains weak singletons together.
-
-All operations use bounded candidate blocks and canonical content-derived ordering so
-decisions are deterministic regardless of input file traversal order.
+  with zero conflicts, and never together with a conflicting co-attachment. Never chains weak
+  singletons together.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 
-from clinveil.linking.matcher import ClusterProfile, compare_profiles
+from clinveil.linking.matcher import (
+    ClusterProfile,
+    compare_profiles,
+    is_weak_edge,
+    shared_global_ids,
+    strong_pair_conflicts,
+    weak_path_conflicts,
+)
 from clinveil.linking.models import (
     LinkingStats,
     MatchOutcome,
     MatchStrength,
+    PairDecision,
     RecordEvidence,
 )
 
 #: Maximum distinct clusters in a single blocking bucket before skipping as pathological/ambiguous.
 MAX_ID_BLOCK = 128
 MAX_NAME_BLOCK = 64
-
-_CORROB_PRIORITY = {
-    "corrob_dob": 4,
-    "corrob_phone": 3,
-    "corrob_relative": 2,
-    "corrob_insurance": 1,
-    "corrob_email": 1,
-    "corrob_village_age": 1,
-    "corrob_village_birth_year": 1,
-}
+#: Maximum clusters in one connected group of candidate edges. Complete-linkage verification is
+#: pairwise inside a group, so larger groups abstain (bounded work, never quadratic in the input).
+MAX_COMPONENT = 256
+_GENERIC_MRN_REASONS = frozenset({"shared_external_mrn", "shared_external_mrn_with_name"})
 
 
 def cluster_records(evidence_list: list[RecordEvidence]) -> tuple[list[ClusterProfile], LinkingStats]:
@@ -63,6 +73,8 @@ def cluster_records(evidence_list: list[RecordEvidence]) -> tuple[list[ClusterPr
             active_ids.append(idx)
 
     parent = {i: i for i in clusters}
+    #: Ambiguous bridge clusters: never merged again in any later stage (PASS1-NEW-6).
+    frozen: set[int] = set()
 
     def find(x: int) -> int:
         while parent[x] != x:
@@ -82,7 +94,7 @@ def cluster_records(evidence_list: list[RecordEvidence]) -> tuple[list[ClusterPr
         return ra
 
     # ------------------------------------------------------------------ Stage A: Global IDs
-    global_blocks = _build_global_blocks(active_ids, clusters)
+    global_blocks = _build_global_blocks(active_ids, clusters)  # nothing is frozen yet
     _merge_from_blocks(
         global_blocks,
         clusters=clusters,
@@ -92,6 +104,7 @@ def cluster_records(evidence_list: list[RecordEvidence]) -> tuple[list[ClusterPr
         stats=stats,
         allowed_strengths={MatchStrength.STRONG_GLOBAL},
         max_block=MAX_ID_BLOCK,
+        frozen=frozen,
     )
 
     # ------------------------------------------------------------------ Stage B: Hospital-Scoped Local IDs
@@ -105,19 +118,20 @@ def cluster_records(evidence_list: list[RecordEvidence]) -> tuple[list[ClusterPr
         stats=stats,
         allowed_strengths={MatchStrength.STRONG_GLOBAL, MatchStrength.STRONG_SCOPED_ID},
         max_block=MAX_ID_BLOCK,
+        frozen=frozen,
     )
 
     # ------------------------------------------------------------------ Stage C1: Corroborated Full Names
     # Bounded convergence (up to 3 passes) so multi-hospital clusters that gain a corroborator
-    # from an earlier merge can cleanly link in the next pass, while always re-checking conflicts.
+    # from an earlier merge can cleanly link in the next pass; each pass is resolved set-wise.
     for _ in range(3):
         before = len(clusters)
-        _merge_corroborated_full_names(clusters, sigs, find, merge_roots, stats)
+        _merge_corroborated_full_names(clusters, sigs, find, merge_roots, stats, frozen)
         if len(clusters) == before:
             break
 
     # ------------------------------------------------------------------ Stage C2: Unique Fragmented Attachments
-    _attach_fragmented_singletons(clusters, sigs, find, merge_roots, stats)
+    _attach_fragmented_singletons(clusters, sigs, find, merge_roots, stats, frozen)
 
     final_clusters = sorted(clusters.values(), key=lambda c: tuple(c.members))
     return final_clusters, stats
@@ -168,29 +182,272 @@ def _merge_from_blocks(
     stats: LinkingStats,
     allowed_strengths: set[MatchStrength],
     max_block: int,
+    frozen: set[int],
 ) -> None:
+    """Collect identifier edges between the current clusters, then resolve them set-wise."""
+    edges: dict[tuple[int, int], PairDecision] = {}
+    seen: set[tuple[int, int]] = set()
     for _key in sorted(blocks):
-        members = blocks[_key]
-        unique_roots = sorted({find(m) for m in members}, key=lambda r: sigs[r])
-        if len(unique_roots) < 2:
+        roots = sorted({find(m) for m in blocks[_key]} - frozen, key=lambda r: sigs[r])
+        if len(roots) < 2:
             continue
-        if len(unique_roots) > max_block:
+        if len(roots) > max_block:
             stats.blocks_capped_ambiguous += 1
             continue
-        for i in range(len(unique_roots)):
-            ra = find(unique_roots[i])
-            if ra not in clusters:
-                continue
-            for j in range(i + 1, len(unique_roots)):
-                rb = find(unique_roots[j])
-                if rb == ra or rb not in clusters:
+        for i in range(len(roots)):
+            for j in range(i + 1, len(roots)):
+                pair = _pair(roots[i], roots[j])
+                if pair in seen:
                     continue
-                dec = compare_profiles(clusters[ra], clusters[rb], allow_fragmented=False)
+                seen.add(pair)
+                dec = compare_profiles(clusters[pair[0]], clusters[pair[1]], allow_fragmented=False)
                 if dec.outcome is MatchOutcome.CONFIDENT_MATCH and dec.strength in allowed_strengths:
-                    ra = merge_roots(ra, rb, dec.strength)
+                    edges[pair] = dec
                 elif dec.outcome is MatchOutcome.CONFLICT:
                     stats.merges_blocked_by_conflict += 1
                     stats.outcomes_by_type[MatchOutcome.CONFLICT.value] += 1
+    _resolve_edge_groups(
+        edges, clusters=clusters, sigs=sigs, find=find, merge_roots=merge_roots, stats=stats, frozen=frozen
+    )
+
+
+def _pair(a: int, b: int) -> tuple[int, int]:
+    return (a, b) if a < b else (b, a)
+
+
+def _resolve_edge_groups(
+    edges: dict[tuple[int, int], PairDecision],
+    *,
+    clusters: dict[int, ClusterProfile],
+    sigs: dict[int, tuple[str, ...]],
+    find,
+    merge_roots,
+    stats: LinkingStats,
+    frozen: set[int],
+    name_stage: bool = False,
+) -> None:
+    """Merge each connected group of candidate edges only if it is complete-linkage consistent.
+
+    Order-independent by construction: groups, conflicts and bridges are computed on sets of the
+    clusters that existed when the stage started; merging happens only after a group is accepted.
+
+    ``conflict(u, w)`` for two clusters of a group that are not directly matched:
+    * identifier groups, when ``u`` and ``w`` are joined by a path of STRONG edges only (validated
+      global IDs / verified same-hospital MRNs): :func:`strong_pair_conflicts`, i.e. contradicting
+      person-unique IDs, relative-owned IDs, gender, DOB, birth year, age or whole names. Soft
+      homonym vetoes (relative name, village, district) are not applied between such pairs, because
+      one patient's records legitimately name different relatives (father in one, spouse in another)
+      and the strong IDs already prove identity;
+    * identifier groups, when every path between ``u`` and ``w`` uses a WEAK edge (unverified-scope,
+      prefixed or external-lab MRN, which does not prove identity on its own):
+      :func:`weak_path_conflicts`, i.e. every homonym (relative name, village, district), R7 and
+      complete-linkage veto that a DIRECT weak MRN match between ``u`` and ``w`` would have to pass
+      (P33-F1). Otherwise a partial record (an MRN and a name only) could join two homonyms that a
+      direct comparison keeps apart;
+    * name groups: the full :func:`compare_profiles` verdict is ``CONFLICT`` (all homonym and
+      complete-linkage vetoes), because names alone do not prove identity.
+
+    A cluster adjacent to two mutually conflicting clusters is an ambiguous bridge. A cluster that
+    links two clusters of different hospitals through a generic external-lab MRN edge is also
+    ambiguous (the same generic MRN number exists at both, NEW-3). Bridges abstain and are frozen; the remainder is
+    split and re-resolved. If conflicts remain without a direct bridge, the non-conflicting
+    connector clusters are frozen; if there are none, the whole group abstains and every member is
+    frozen. A group above :data:`MAX_COMPONENT` abstains and every member is frozen (P33-F5), so no
+    abstained record can re-enter through a later, weaker stage.
+    """
+    adj: dict[int, set[int]] = defaultdict(set)
+    for a, b in edges:
+        adj[a].add(b)
+        adj[b].add(a)
+    memo: dict[tuple[int, int], bool] = {}
+    strong_memo: dict[tuple[int, int, bool], bool] = {}
+    weak_memo: dict[tuple[int, int], bool] = {}
+    global_label: dict[int, int] = {}
+
+    def strong_conflict(u: int, w: int) -> bool:
+        # A strong path that needs a verified local ID (not validated global IDs alone) keeps R7
+        # (P33-PASS3-F2): shared OPD numbers cannot chain two different UHIDs together.
+        via_local = global_label[u] != global_label[w]
+        skey = (*_pair(u, w), via_local)
+        if skey not in strong_memo:
+            strong_memo[skey] = bool(strong_pair_conflicts(clusters[u], clusters[w], via_local_id=via_local))
+        return strong_memo[skey]
+
+    def conflict(u: int, w: int, label: dict[int, int], profiles: dict[int, ClusterProfile]) -> bool:
+        key = _pair(u, w)
+        cu, cw = clusters[u], clusters[w]
+        if name_stage:
+            if key not in memo:
+                memo[key] = compare_profiles(cu, cw, allow_fragmented=False).outcome is MatchOutcome.CONFLICT
+            return memo[key]
+        if label[u] == label[w]:
+            return strong_conflict(u, w)
+        # Linked only through a weak edge: judge the two strong sub-components (each already proven
+        # to be one patient) as a direct weak MRN match between them would be judged (P33-F1).
+        lkey = _pair(label[u], label[w])
+        if lkey not in weak_memo:
+            weak_memo[lkey] = bool(weak_path_conflicts(profiles[label[u]], profiles[label[w]]))
+        return weak_memo[lkey] or strong_conflict(u, w)
+
+    def components(nodes: set[int]) -> list[list[int]]:
+        out: list[list[int]] = []
+        todo = set(nodes)
+        for start in sorted(nodes, key=lambda r: sigs[r]):
+            if start not in todo:
+                continue
+            todo.discard(start)
+            comp, stack = [start], [start]
+            while stack:
+                for nb in adj[stack.pop()]:
+                    if nb in todo:
+                        todo.discard(nb)
+                        comp.append(nb)
+                        stack.append(nb)
+            out.append(sorted(comp, key=lambda r: sigs[r]))
+        return out
+
+    work = components(set(adj))
+    while work:
+        comp = work.pop(0)
+        if len(comp) < 2:
+            continue
+        if len(comp) > MAX_COMPONENT:
+            # Abstain AND freeze every member: none may re-enter Stage B, C1 or C2 (P33-F5).
+            stats.blocks_capped_ambiguous += 1
+            stats.outcomes_by_type[MatchOutcome.AMBIGUOUS.value] += len(comp)
+            frozen.update(comp)
+            continue
+        members = set(comp)
+        strong_label = _strong_edge_labels(comp, adj, edges, name_stage=name_stage)
+        global_label.clear()
+        if not name_stage:
+            global_label.update(_strong_edge_labels(comp, adj, edges, name_stage=False, global_only=True))
+        weak_memo.clear()  # sub-component labels are per group
+        profiles = {} if name_stage else _sub_component_profiles(comp, strong_label, clusters)
+        bad_pairs = {
+            (u, w)
+            for i, u in enumerate(comp)
+            for w in comp[i + 1 :]
+            if _pair(u, w) not in edges and conflict(u, w, strong_label, profiles)
+        }
+        bridges: set[int] = set()
+        for v in comp:
+            nbrs = sorted((n for n in adj[v] if n in members), key=lambda r: sigs[r])
+            for i, u in enumerate(nbrs):
+                for w in nbrs[i + 1 :]:
+                    if _pair(u, w) in edges:
+                        continue
+                    clash = (u, w) in bad_pairs or (w, u) in bad_pairs
+                    if clash or (
+                        not name_stage and _weak_cross_hospital(edges[_pair(v, u)], edges[_pair(v, w)], u, w, clusters)
+                    ):
+                        bridges.add(v)
+        if not bad_pairs and not bridges:
+            _merge_group(comp, adj, edges, sigs=sigs, find=find, merge_roots=merge_roots)
+            continue
+        if not bridges:
+            in_conflict = {x for p in bad_pairs for x in p}
+            bridges = members - in_conflict
+        if not bridges:
+            stats.outcomes_by_type[MatchOutcome.AMBIGUOUS.value] += len(comp)
+            frozen.update(comp)
+            continue
+        frozen |= bridges
+        stats.outcomes_by_type[MatchOutcome.AMBIGUOUS.value] += len(bridges)
+        rest = members - bridges
+        sub_adj_nodes = {x for x in rest if adj[x] & rest}
+        for sub in components(sub_adj_nodes):
+            work.append([x for x in sub if x in rest])
+
+
+def _strong_edge_labels(
+    comp: list[int],
+    adj: dict[int, set[int]],
+    edges: dict[tuple[int, int], PairDecision],
+    *,
+    name_stage: bool,
+    global_only: bool = False,
+) -> dict[int, int]:
+    """Label each member of ``comp`` by its sub-component under STRONG identifier edges only.
+
+    Two members with the same label are linked by validated global IDs / verified same-hospital
+    MRNs alone; two members with different labels are linked only through at least one weak edge
+    (P33-F1). In a name stage no edge proves identity, so every member gets its own label.
+    ``global_only``: label by validated global-ID edges (Tier 1) alone (P33-PASS3-F2)."""
+    if name_stage:
+        return {v: i for i, v in enumerate(comp)}
+    members = set(comp)
+    label: dict[int, int] = {}
+    for start in comp:  # ``comp`` is sorted by signature: labels are deterministic
+        if start in label:
+            continue
+        label[start] = start
+        stack = [start]
+        while stack:
+            v = stack.pop()
+            for nb in adj[v]:
+                dec = edges[_pair(v, nb)]
+                linked = dec.strength is MatchStrength.STRONG_GLOBAL if global_only else not is_weak_edge(dec)
+                if nb in members and nb not in label and linked:
+                    label[nb] = start
+                    stack.append(nb)
+    return label
+
+
+def _sub_component_profiles(
+    comp: list[int], label: dict[int, int], clusters: dict[int, ClusterProfile]
+) -> dict[int, ClusterProfile]:
+    """Union profile of each strong sub-component (a fresh object: ``clusters`` is never mutated)."""
+    by_label: dict[int, list[int]] = defaultdict(list)
+    for v in comp:
+        by_label[label[v]].append(v)
+    out: dict[int, ClusterProfile] = {}
+    for lab, vs in by_label.items():
+        if len(vs) == 1:
+            out[lab] = clusters[vs[0]]
+            continue
+        merged = ClusterProfile()
+        for v in vs:
+            merged.absorb(clusters[v])
+        out[lab] = merged
+    return out
+
+
+def _weak_cross_hospital(
+    e1: PairDecision, e2: PairDecision, u: int, w: int, clusters: dict[int, ClusterProfile]
+) -> bool:
+    """``u`` and ``w`` come from different hospitals and at least one of them is reached only through
+    a GENERIC external-lab MRN number, which both hospitals may have issued to different patients (NEW-3).
+
+    Distinctive issuer-prefixed UHIDs (``JJH-…``, ``SNJ-…``) name their issuer, so a document citing
+    two of them is cross-hospital evidence, not an ambiguity.
+    """
+    if not (_GENERIC_MRN_REASONS & set(e1.reasons) or _GENERIC_MRN_REASONS & set(e2.reasons)):
+        return False
+    cu, cw = clusters[u], clusters[w]
+    disjoint = bool(cu.hospitals and cw.hospitals and cu.hospitals.isdisjoint(cw.hospitals))
+    return disjoint and not shared_global_ids(cu, cw)
+
+
+def _merge_group(
+    comp: list[int],
+    adj: dict[int, set[int]],
+    edges: dict[tuple[int, int], PairDecision],
+    *,
+    sigs: dict[int, tuple[str, ...]],
+    find,
+    merge_roots,
+) -> None:
+    """Merge an accepted group along a deterministic spanning tree (the union does not depend on it)."""
+    members = set(comp)
+    seen = {comp[0]}
+    queue = [comp[0]]
+    while queue:
+        v = queue.pop(0)
+        for nb in sorted((n for n in adj[v] if n in members and n not in seen), key=lambda r: sigs[r]):
+            seen.add(nb)
+            queue.append(nb)
+            merge_roots(find(v), find(nb), edges[_pair(v, nb)].strength)
 
 
 def _name_block_keys(c: ClusterProfile) -> set[tuple[str, str]]:
@@ -219,10 +476,11 @@ def _merge_corroborated_full_names(
     find,
     merge_roots,
     stats: LinkingStats,
+    frozen: set[int],
 ) -> None:
     blocks: dict[tuple[str, str], list[int]] = defaultdict(list)
     for cid, c in clusters.items():
-        if not c.has_full_patient_name:
+        if cid in frozen or not c.has_full_patient_name:
             continue
         for k in _name_block_keys(c):
             blocks[k].append(cid)
@@ -235,8 +493,7 @@ def _merge_corroborated_full_names(
         if _key[0] == "full" and len({find(m) for m in members}) > MAX_NAME_BLOCK:
             capped_ids.update(find(m) for m in members)
 
-    # Collect candidate corroborated edges with priority
-    cand_edges: list[tuple[int, tuple[str, ...], tuple[str, ...], int, int]] = []
+    edges: dict[tuple[int, int], PairDecision] = {}
     seen_pairs: set[tuple[int, int]] = set()
     for _key in sorted(blocks):
         roots = sorted({find(m) for m in blocks[_key]}, key=lambda r: sigs[r])
@@ -251,62 +508,29 @@ def _merge_corroborated_full_names(
                 a, b = roots[i], roots[j]
                 if a in capped_ids or b in capped_ids:
                     continue
-                pair = (a, b) if a < b else (b, a)
+                pair = _pair(a, b)
                 if pair in seen_pairs:
                     continue
                 seen_pairs.add(pair)
-                dec = compare_profiles(clusters[a], clusters[b], allow_fragmented=False)
+                dec = compare_profiles(clusters[pair[0]], clusters[pair[1]], allow_fragmented=False)
                 if dec.outcome is MatchOutcome.CONFIDENT_MATCH and dec.strength is MatchStrength.CORROBORATED_NAME:
-                    prio = max((_CORROB_PRIORITY.get(r, 0) for r in dec.reasons), default=0)
-                    sa, sb = (sigs[a], sigs[b]) if sigs[a] <= sigs[b] else (sigs[b], sigs[a])
-                    cand_edges.append((-prio, sa, sb, a, b))
+                    edges[pair] = dec
                 elif dec.outcome is MatchOutcome.CONFLICT:
                     stats.merges_blocked_by_conflict += 1
                     stats.outcomes_by_type[MatchOutcome.CONFLICT.value] += 1
 
-    # Ambiguity check: build adjacency of candidate edges so if node X matches Y and Z
-    # where Y and Z CONFLICT with each other, X's weaker ambiguous edges are withheld.
-    adj: dict[int, set[int]] = defaultdict(set)
-    for _, _, _, a, b in cand_edges:
-        adj[a].add(b)
-        adj[b].add(a)
-
-    cand_edges.sort()
-    for _, _, _, a, b in cand_edges:
-        ra, rb = find(a), find(b)
-        if ra == rb or ra not in clusters or rb not in clusters:
-            continue
-        # Check if ra or rb has a competing candidate that conflicts with the other
-        if _has_competing_conflict(ra, rb, adj, clusters, find):
-            stats.outcomes_by_type[MatchOutcome.AMBIGUOUS.value] += 1
-            continue
-        # Always re-verify cluster-level conflicts immediately before merging!
-        dec = compare_profiles(clusters[ra], clusters[rb], allow_fragmented=False)
-        if dec.outcome is MatchOutcome.CONFIDENT_MATCH:
-            merge_roots(ra, rb, dec.strength)
-        elif dec.outcome is MatchOutcome.CONFLICT:
-            stats.merges_blocked_by_conflict += 1
-            stats.outcomes_by_type[MatchOutcome.CONFLICT.value] += 1
-
-
-def _has_competing_conflict(
-    ra: int,
-    rb: int,
-    adj: dict[int, set[int]],
-    clusters: dict[int, ClusterProfile],
-    find,
-) -> bool:
-    for node, partner in ((ra, rb), (rb, ra)):
-        for nbr in adj.get(node, ()):
-            rn = find(nbr)
-            if rn in (ra, rb) or rn not in clusters:
-                continue
-            d_self = compare_profiles(clusters[node], clusters[rn], allow_fragmented=False)
-            if d_self.outcome is MatchOutcome.CONFIDENT_MATCH:
-                d_cross = compare_profiles(clusters[partner], clusters[rn], allow_fragmented=False)
-                if d_cross.outcome is MatchOutcome.CONFLICT:
-                    return True
-    return False
+    # A name-matched cluster adjacent to two mutually conflicting clusters is ambiguous and abstains;
+    # a group merges only if every pair in it is conflict-free (complete linkage).
+    _resolve_edge_groups(
+        edges,
+        clusters=clusters,
+        sigs=sigs,
+        find=find,
+        merge_roots=merge_roots,
+        stats=stats,
+        frozen=frozen,
+        name_stage=True,
+    )
 
 
 def _attach_fragmented_singletons(
@@ -315,6 +539,7 @@ def _attach_fragmented_singletons(
     find,
     merge_roots,
     stats: LinkingStats,
+    frozen: set[int],
 ) -> None:
     """Attach remaining fragmented singletons (e.g. first name + relative/phone/village+age)
     ONLY when they match a SINGLE unique anchor cluster with zero conflicts.
@@ -323,6 +548,8 @@ def _attach_fragmented_singletons(
     target_blocks: dict[tuple[str, str], list[int]] = defaultdict(list)
     singletons: list[int] = []
     for cid in sorted(clusters, key=lambda r: sigs[r]):
+        if cid in frozen:
+            continue
         c = clusters[cid]
         if len(c.members) == 1 and c.patient_names and not c.has_full_patient_name and not c.has_global_id:
             singletons.append(cid)
@@ -384,14 +611,31 @@ def _attach_fragmented_singletons(
         else:
             stats.outcomes_by_type[MatchOutcome.INSUFFICIENT_EVIDENCE.value] += 1
 
-    # Apply unique attachments, re-verifying conflict after any earlier attachment to the same cluster
+    # Two singletons attaching to the same anchor must also be compatible with each other;
+    # otherwise neither attaches (decided on the whole set, so the result is order-independent).
+    by_target: dict[int, list[int]] = defaultdict(list)
     for sid, tid, _strength in attachments:
-        rs, rt = find(sid), find(tid)
-        if rs == rt or rs not in clusters or rt not in clusters:
-            continue
-        dec = compare_profiles(clusters[rs], clusters[rt], allow_fragmented=True)
-        if dec.outcome is MatchOutcome.CONFIDENT_MATCH:
-            merge_roots(rt, rs, dec.strength)
-        elif dec.outcome is MatchOutcome.CONFLICT:
-            stats.merges_blocked_by_conflict += 1
-            stats.outcomes_by_type[MatchOutcome.CONFLICT.value] += 1
+        by_target[tid].append(sid)
+    for tid in sorted(by_target, key=lambda r: sigs[r]):
+        sids = sorted(by_target[tid], key=lambda r: sigs[r])
+        clashing = {
+            x
+            for i, s1 in enumerate(sids)
+            for s2 in sids[i + 1 :]
+            if compare_profiles(clusters[s1], clusters[s2], allow_fragmented=True).outcome is MatchOutcome.CONFLICT
+            for x in (s1, s2)
+        }
+        stats.outcomes_by_type[MatchOutcome.AMBIGUOUS.value] += len(clashing)
+        for sid in sids:
+            if sid in clashing:
+                continue
+            rs, rt = find(sid), find(tid)
+            if rs == rt:
+                continue
+            # Re-verify against the anchor as it stands (it may already hold a compatible co-attachment)
+            dec = compare_profiles(clusters[rs], clusters[rt], allow_fragmented=True)
+            if dec.outcome is MatchOutcome.CONFIDENT_MATCH:
+                merge_roots(rt, rs, dec.strength)
+            elif dec.outcome is MatchOutcome.CONFLICT:
+                stats.merges_blocked_by_conflict += 1
+                stats.outcomes_by_type[MatchOutcome.CONFLICT.value] += 1

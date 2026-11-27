@@ -6,18 +6,23 @@ Returned problem strings are fixed templates with counts only: no paths, no cont
 from __future__ import annotations
 
 import csv
-import io
 import json
 import re
 from pathlib import Path
 
+from clinveil.parsing.csv_format import delimiter_for, read_rows, sniff_delimiter
 from clinveil.privacy.pseudonym import ALPHABET, PREFIX
 
 STATUSES = frozenset({"sanitized", "quarantined", "suppressed"})
 _PSN_RE = re.compile(rf"^{re.escape(PREFIX)}[{ALPHABET}]{{6}}$")
 
 
-def check_release(out_dir: Path, input_shas: list[str]) -> list[str]:
+def check_release(
+    out_dir: Path,
+    input_shas: list[str],
+    *,
+    issued_pseudonyms: frozenset[str] | None = None,
+) -> list[str]:
     problems: list[str] = []
     san = out_dir / "sanitized"
     if not san.is_dir():
@@ -45,20 +50,28 @@ def check_release(out_dir: Path, input_shas: list[str]) -> list[str]:
     if not rj.is_file():
         problems.append("records.jsonl missing")
     else:
-        problems.extend(_check_records_pseudonyms(out_dir, rj, report))
+        problems.extend(_check_records_pseudonyms(out_dir, rj, report, issued_pseudonyms=issued_pseudonyms))
     return problems
 
 
-def _check_records_pseudonyms(out_dir: Path, rj: Path, report: dict) -> list[str]:
-    """Per-RECORD pseudonym validation (Phase 3.1).
+def _check_records_pseudonyms(
+    out_dir: Path,
+    rj: Path,
+    report: dict,
+    *,
+    issued_pseudonyms: frozenset[str] | None = None,
+) -> list[str]:
+    """Per-RECORD pseudonym validation (Phase 3.1 / 3.2).
 
     SPEC §6: "the ``patient`` value must actually appear inside that exported record". For each
     ``records.jsonl`` line the record is located by its locator (``row:N`` in CSV/TSV, an RFC 6901
     pointer in JSON, ``doc`` = whole file) and checked:
 
     * a linked record contains its OWN pseudonym (not merely somewhere in the file);
-    * no record contains a DIFFERENT patient's pseudonym (no inherited / leaked pseudonyms);
-    * an unlinked record contains no pseudonym;
+    * no record contains a DIFFERENT patient's pseudonym (when ``issued_pseudonyms`` is supplied
+      by the pipeline, only tokens actually issued by this release count as foreign so pre-existing
+      PSN-shaped clinical codes in unlinked notes do not cause false contract failures, F8);
+    * an unlinked record contains no issued pseudonym;
     * ``report.counts.records_linked`` equals the number of non-null claims.
     """
     problems: list[str] = []
@@ -84,8 +97,9 @@ def _check_records_pseudonyms(out_dir: Path, rj: Path, report: dict) -> list[str
         if segment is None:
             unlocatable += 1
         tokens = set(_PSN_TOKEN_RE.findall(segment)) if segment is not None else set()
+        foreign_candidates = (tokens & issued_pseudonyms) if issued_pseudonyms is not None else tokens
         if psn is None:
-            if tokens:
+            if foreign_candidates:
                 foreign += 1
             continue
         linked += 1
@@ -96,7 +110,7 @@ def _check_records_pseudonyms(out_dir: Path, rj: Path, report: dict) -> list[str
             continue
         if psn not in tokens:
             missing_own += 1
-        if tokens - {psn}:
+        if foreign_candidates - {psn}:
             foreign += 1
     if bad_fmt:
         problems.append(f"{bad_fmt} records have malformed pseudonyms")
@@ -116,12 +130,21 @@ _PSN_TOKEN_RE = re.compile(rf"{re.escape(PREFIX)}[{ALPHABET}]{{6}}(?![{ALPHABET}
 
 
 class _ParsedOutput:
-    """An exported file parsed just enough to cut out one record by its locator."""
+    """An exported file parsed just enough to cut out one record by its locator.
 
-    __slots__ = ("_json", "_rows", "_text")
+    The structure is chosen by the LOCATOR, never by the file extension (D14, NEW-6A): a JSON
+    pointer is resolved in the parsed JSON (even when the file is named ``.csv``/``.tsv``/``.dat``),
+    a ``row:N`` locator in the delimited table (the delimiter sniffed exactly as ingestion does).
+    Each structure is parsed lazily, at most once; malformed content makes the record unlocatable.
+    """
 
-    def __init__(self, text: str, rows: list[list[str]] | None, data: object) -> None:
-        self._text, self._rows, self._json = text, rows, data
+    __slots__ = ("_json", "_json_done", "_rows", "_rows_done", "_suffix", "_text")
+
+    def __init__(self, text: str, suffix: str) -> None:
+        self._text, self._suffix = text, suffix
+        self._rows: list[list[str]] | None = None
+        self._json: object = None
+        self._rows_done = self._json_done = False
 
     def __repr__(self) -> str:
         return "_ParsedOutput(<redacted>)"
@@ -132,33 +155,43 @@ class _ParsedOutput:
             text = path.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             return None
-        suffix = path.suffix.lower()
-        rows: list[list[str]] | None = None
-        data: object = None
-        if suffix in (".csv", ".tsv"):
-            delim = "\t" if suffix == ".tsv" else _sniff_delimiter(text)
+        return cls(text, path.suffix.lower())
+
+    def _table(self) -> list[list[str]] | None:
+        if not self._rows_done:
+            self._rows_done = True
             try:
-                rows = list(csv.reader(io.StringIO(text), delimiter=delim))
-            except csv.Error:
-                rows = None
-        elif suffix == ".json":
+                delim = sniff_delimiter(self._text, delimiter_for(self._suffix))
+                self._rows = read_rows(self._text, delim)
+            except (csv.Error, ValueError):
+                self._rows = None
+        return self._rows
+
+    def _data(self) -> object:
+        if not self._json_done:
+            self._json_done = True
             try:
-                data = json.loads(text)
+                self._json = json.loads(self._text)
             except ValueError:
-                data = None
-        return cls(text, rows, data)
+                self._json = None
+        return self._json
 
     def record_text(self, loc: str) -> str | None:
         if loc == "doc":
             return self._text
-        if loc.startswith("row:") and self._rows is not None:
+        if loc.startswith("row:"):
+            rows = self._table()
+            if rows is None:
+                return None
             try:
                 i = int(loc[4:]) + 1  # header excluded from row numbering
             except ValueError:
                 return None
-            return "\x1f".join(self._rows[i]) if 0 < i < len(self._rows) else None
-        if loc.startswith("/") and self._json is not None:
-            node = self._json
+            return "\x1f".join(rows[i]) if 0 < i < len(rows) else None
+        if loc.startswith("/"):
+            node = self._data()
+            if node is None:
+                return None
             for part in (p.replace("~1", "/").replace("~0", "~") for p in loc.split("/")[1:]):
                 if isinstance(node, list) and part.isdigit() and int(part) < len(node):
                     node = node[int(part)]
@@ -168,10 +201,3 @@ class _ParsedOutput:
                     return None
             return json.dumps(node, ensure_ascii=False)
         return None
-
-
-def _sniff_delimiter(text: str) -> str:
-    header = text.split("\n", 1)[0]
-    counts = {d: header.count(d) for d in (",", ";", "\t", "|")}
-    best = max(counts, key=lambda d: counts[d])
-    return best if counts[best] else ","

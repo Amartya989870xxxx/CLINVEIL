@@ -121,10 +121,24 @@ def _is_name_token(tok: Token, *, allow_lower: bool) -> bool:
     return allow_lower or tok.text[0].isupper()
 
 
-def _gap_ok(text: str, a: int, b: int) -> bool:
-    """Tokens are part of one name if separated by one space or an initial's period."""
+_DOTTED_NAME_PREFIXES = frozenset({"md", "mohd", "st", "sk", "dr", "mr", "mrs", "ms", "smt", "km"})
+
+
+def _gap_ok(text: str, a: int, b: int, *, prev_tok: Token | None = None) -> bool:
+    """Tokens are part of one name if separated by one space or an initial's period.
+
+    A period gap (``"."`` or ``". "``) only joins tokens when the preceding token is a 1-letter
+    initial or a known dotted prefix (``R. Sharma``, ``Mohd. Ali``) — never across a sentence
+    boundary after a full surname (``Maren Vermeer. Husband: ...``, F9).
+    """
     gap = text[a:b]
-    return gap in (" ", " ", ". ", ".", "_") or (len(gap) == 2 and gap[0] == "." and gap[1] == " ")
+    if gap in (" ", " ", "_"):
+        return True
+    if gap in (". ", "."):
+        if prev_tok is None:
+            return True
+        return len(prev_tok.text) == 1 or prev_tok.key in _DOTTED_NAME_PREFIXES
+    return False
 
 
 def name_after(
@@ -138,19 +152,23 @@ def name_after(
         i < len(tokens)
         and (tokens[i].key in PREFIX_TITLES or tokens[i].text in DEVA_PREFIX_TITLES)
         and i + 1 < len(tokens)
-        and _gap_ok(text, tokens[i].end, tokens[i + 1].start)
+        and _gap_ok(text, tokens[i].end, tokens[i + 1].start, prev_tok=tokens[i])
     ):
         i += 1
     start = end = None
+    prev: Token | None = None
     taken = 0
     while i < len(tokens) and taken < max_tokens:
         tok = tokens[i]
-        if start is not None and not _gap_ok(text, end, tok.start):
+        if start is not None and not _gap_ok(text, end, tok.start, prev_tok=prev):
             break
+        if start is not None and text[tok.end : tok.end + 1] in (":", "："):
+            break  # next field label ("Husband:", "Father:", "Age:") is never part of this name
         if not _is_name_token(tok, allow_lower=allow_lower):
             break
         start = tok.start if start is None else start
         end = tok.end
+        prev = tok
         taken += 1
         i += 1
     return (start, end) if start is not None else None
@@ -168,7 +186,7 @@ def name_before(
     taken = 0
     while j >= 0 and taken < max_tokens:
         tok = tokens[j]
-        if end is not None and not _gap_ok(text, tok.end, start):
+        if end is not None and not _gap_ok(text, tok.end, start, prev_tok=tok):
             break
         if not _is_name_token(tok, allow_lower=False):
             break

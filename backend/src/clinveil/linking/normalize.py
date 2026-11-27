@@ -153,6 +153,26 @@ _HOSPITAL_STOP = frozenset(
         "tsv",
         "json",
         "txt",
+        "ward",
+        "register",
+        "registers",
+        "roster",
+        "sheet",
+        "table",
+        "list",
+        "record",
+        "records",
+        "visit",
+        "visits",
+        "admission",
+        "admissions",
+        "batch",
+        "batches",
+        "upload",
+        "uploads",
+        "data",
+        "file",
+        "files",
         "aspatal",
         "chikitsalaya",
         "jila",
@@ -160,6 +180,55 @@ _HOSPITAL_STOP = frozenset(
     }
 )
 _LAB_WORDS = frozenset({"lab", "labs", "laboratory", "pathology", "diagnostic", "diagnostics", "imaging", "scans"})
+_GENERIC_HOSPITAL_QUALIFIERS = frozenset(
+    {
+        "city",
+        "civil",
+        "state",
+        "central",
+        "regional",
+        "public",
+        "community",
+        "rural",
+        "urban",
+        "government",
+        "govt",
+        "sadar",
+        "primary",
+        "sub",
+        "municipal",
+        "local",
+        "metro",
+    }
+)
+_HOSPITAL_TYPE_WORDS = frozenset(
+    {
+        "hospital",
+        "clinic",
+        "sadan",
+        "dispensary",
+        "infirmary",
+        "medical",
+        "health",
+        "centre",
+        "center",
+        "aspatal",
+        "chikitsalaya",
+    }
+)
+_FALLBACK_HOSPITAL_MODIFIERS = _GENERIC_HOSPITAL_QUALIFIERS | frozenset(
+    {
+        "district",
+        "general",
+        "charitable",
+        "memorial",
+        "nursing",
+        "trust",
+        "seva",
+        "multispeciality",
+        "multispecialty",
+    }
+)
 _VILLAGE_PREFIX_RE = re.compile(
     r"(?i)^\s*(?:vill(?:age)?|gram|gaon|gaav|gaanv|mohalla|muhalla|post|p\.?o\.?|ward|gram\s+panchayat|"
     r"ग्राम|गाँव|गांव|मोहल्ला|पोस्ट)\b\.?\s*[:\-]?\s*"
@@ -188,6 +257,9 @@ def strict_name_token(token: str) -> str:
     ``ai``/``ei``->``e``, ``ee``/``ii``->``i``, ``oo``/``uu``->``u``, ``qu``->``k``,
     trailing ``ey``->``e`` and ``y``->``i``, initial ``o``->``u`` and ``e``->``i``)
     while keeping distinct medial vowels (``i`` vs ``a``, ``o`` vs ``a``) strictly apart.
+
+    A bare one-letter initial is NOT vowel-folded (P33-F4): ``E.`` stays ``e`` and never equals
+    ``I.``; initials are compared with :func:`initial_key` of the full token instead.
     """
     t = latin_name_form(token)
     if not t:
@@ -202,11 +274,35 @@ def strict_name_token(token: str) -> str:
             t = t[:-1]  # pandey -> pande, dubey -> dube
         elif t.endswith("y") and len(t) >= 3:
             t = t[:-1] + "i"  # tripathy -> tripati, chaudhary -> chaudhari
+    # Initial-vowel folds apply to whole name tokens only. A bare initial keeps the letter that was
+    # written (P33-F4): folding "E." to "i" made it match "Imran" / "Indira", and "O." match "Umesh".
+    if len(t) >= 2:
         if t[0] == "o":
             t = "u" + t[1:]  # omar ~ umar
         elif t[0] == "e":
             t = "i" + t[1:]  # eshaan ~ ishaan
     return re.sub(r"(.)\1+", r"\1", t)
+
+
+def initial_key(latin: str, strict: str, *, devanagari: bool) -> str:
+    """The letter a written initial must equal to abbreviate this token (P33-F4).
+
+    * Latin token starting with a vowel: the RAW first letter, before any vowel folding, so ``E.``
+      matches ``Evander`` / ``Eshaan`` and ``O.`` matches ``Omar``, but ``E.`` never matches
+      ``Imran`` / ``Indira`` and ``O.`` never matches ``Umesh`` / ``Ulmara``.
+    * Devanagari token starting with a vowel: the transliterated vowel with its long-vowel spelling
+      collapsed (``ई``->``ee``->``i``, ``ऊ``->``oo``->``u``, ``ए``->``e``, ``ओ``->``o``), keeping the
+      intended Devanagari transliteration compatibility (``I.`` ~ ``ईशान``, ``U.`` ~ ``उमेश``).
+    * Consonant start: the first letter of the strict token (consonant folds such as ``w``->``v``
+      unchanged).
+    """
+    if latin and latin[0] in "aeiou":
+        if devanagari:
+            for long_form, short in _LINK_VOWELS:
+                if latin.startswith(long_form):
+                    return short
+        return latin[0]
+    return strict[0]
 
 
 @lru_cache(maxsize=100_000)
@@ -250,12 +346,23 @@ def build_name_evidence(raw_text: str, *, confidence: float, source: str) -> Nam
     ident_list: list[str] = []
     init_list: list[str] = []
     initial_flags: list[bool] = []
-    for tok in toks:
+    for idx, tok in enumerate(toks):
         if tok.key.isdigit():
             continue
-        if tok.key in _TITLE_TOKENS or tok.text in _DEVA_TITLE_TOKENS:
+        # A capital single-letter initial ("O. Kadri", "A Vance", "I. Rao") is part of the name even
+        # though "o" / "a" / "i" are stop words elsewhere; dropping it would reduce the name to a bare
+        # surname that matches every holder of that surname (NEW-7A). "S/O" pieces are excluded.
+        is_raw_initial = (
+            len(tok.text) == 1
+            and tok.text.isascii()
+            and tok.text.isupper()
+            and idx + 1 < len(toks)
+            and "/" not in cleaned[tok.end : toks[idx + 1].start]
+            and (idx == 0 or "/" not in cleaned[toks[idx - 1].end : tok.start])
+        )
+        if not is_raw_initial and (tok.key in _TITLE_TOKENS or tok.text in _DEVA_TITLE_TOKENS):
             continue
-        if tok.key in _NAME_STOP or tok.text in _NAME_STOP:
+        if not is_raw_initial and (tok.key in _NAME_STOP or tok.text in _NAME_STOP):
             continue
         lf = latin_name_form(tok.text)
         st = strict_name_token(tok.text)
@@ -264,7 +371,7 @@ def build_name_evidence(raw_text: str, *, confidence: float, source: str) -> Nam
         is_init = len(lf) == 1 and not tok.is_devanagari
         strict_list.append(st)
         skel_list.append(schwa_skeleton(st))
-        init_list.append(st[0])
+        init_list.append(initial_key(lf, st, devanagari=tok.is_devanagari))
         initial_flags.append(is_init)
         if not is_init and tok.key not in GENERIC_NAME_TOKENS and lf not in GENERIC_NAME_TOKENS:
             ident_list.append(st)
@@ -305,8 +412,10 @@ def _tokens_variant_equal(a_strict: str, a_skel: str, b_strict: str, b_skel: str
     return False
 
 
-def _token_matches_initial(short_tok: str, full_tok: str) -> bool:
-    return len(short_tok) == 1 and len(full_tok) >= 2 and short_tok[0] == full_tok[0]
+def _initial_matches(x: NameEvidence, i: int, y: NameEvidence, j: int) -> bool:
+    """Token ``i`` of ``x`` is a bare initial that abbreviates full token ``j`` of ``y``, compared on
+    the raw written initial (:func:`initial_key`), never on vowel-folded strict tokens (P33-F4)."""
+    return len(x.strict_tokens[i]) == 1 and len(y.strict_tokens[j]) >= 2 and x.initials[i] == y.initials[j]
 
 
 def compare_names(a: NameEvidence, b: NameEvidence) -> NameGrade:
@@ -343,16 +452,16 @@ def compare_names(a: NameEvidence, b: NameEvidence) -> NameGrade:
                 len(a_given) == len(b_given)
                 and all(
                     _tokens_variant_equal(a_given[i], ka[i], b_given[i], kb[i])
-                    or _token_matches_initial(a_given[i], b_given[i])
-                    or _token_matches_initial(b_given[i], a_given[i])
+                    or _initial_matches(a, i, b, i)
+                    or _initial_matches(b, i, a, i)
                     for i in range(len(a_given))
                 )
                 and (any(len(x) == 1 for x in a_given) or any(len(x) == 1 for x in b_given))
             ):
                 return NameGrade.ABBREVIATED_FULL
             # "R. Verma" vs "Rajesh Kumar Verma" (single initial + matching surname)
-            if (len(a_given) == 1 and _token_matches_initial(a_given[0], b_given[0])) or (
-                len(b_given) == 1 and _token_matches_initial(b_given[0], a_given[0])
+            if (len(a_given) == 1 and _initial_matches(a, 0, b, 0)) or (
+                len(b_given) == 1 and _initial_matches(b, 0, a, 0)
             ):
                 return NameGrade.ABBREVIATED_FULL
         return NameGrade.CONFLICT
@@ -369,6 +478,9 @@ def compare_names(a: NameEvidence, b: NameEvidence) -> NameGrade:
         for i in other_ident_indices
     ):
         return NameGrade.FIRST_ONLY_MATCH
+    # "Nolan" vs "N. Vermeer": the given name is only an initial, so it is undecided, not a conflict
+    if len(other.strict_tokens[0]) == 1 and other.initials[0] == single.initials[0]:
+        return NameGrade.NONE
     return NameGrade.CONFLICT
 
 
@@ -456,12 +568,34 @@ def normalize_phone(raw: str) -> str | None:
     return None
 
 
+def _collapse_initial_runs(tokens: list[str]) -> list[str]:
+    """Collapse contiguous single-letter initials (``["k", "m", "hospital"]`` -> ``["km", "hospital"]``)."""
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        if len(tokens[i]) == 1 and tokens[i].isalpha():
+            j = i
+            while j < len(tokens) and len(tokens[j]) == 1 and tokens[j].isalpha():
+                j += 1
+            if j - i >= 2:
+                out.append("".join(tokens[i:j]))
+            else:
+                out.append(tokens[i])
+            i = j
+        else:
+            out.append(tokens[i])
+            i += 1
+    return out
+
+
 @lru_cache(maxsize=10_000)
 def normalize_hospital(raw: str) -> tuple[str | None, bool]:
     """Normalise a hospital/facility name, URL, or filename stem into ``(slug, is_external_lab)``.
 
     Preserves distinctive identifiers like ``Hospital-A`` -> ``hospital_a`` and
-    ``Hospital-B`` -> ``hospital_b`` so two distinct hospitals never collapse together.
+    ``Hospital-B`` -> ``hospital_b``, distinguishes multi-city branches of generically named
+    hospitals (``City Hospital, Lucknow`` vs ``City Hospital, Kanpur``), preserves initialled
+    names (``K. M. Hospital``), and avoids dropping generic hospital names to ``None``.
     """
     if not raw or not raw.strip():
         return None, False
@@ -470,8 +604,27 @@ def normalize_hospital(raw: str) -> tuple[str | None, bool]:
         host = urlparse(text).hostname or ""
         text = host.replace(".", " ")
     else:
-        # Strip trailing city/branch/subtitle after comma, em-dash, or pipe ("Arogya Seva Sadan, Sitapur")
-        text = re.split(r"[,|—–]", text, maxsplit=1)[0].strip()
+        # Strip trailing city/branch after comma/dash ONLY when the head already has a proper
+        # distinctive name ("Arogya Seva Sadan, Sitapur" -> "Arogya Seva Sadan"); keep the city
+        # when the head is generic ("City Hospital, Lucknow" vs "City Hospital, Kanpur", F7).
+        parts = re.split(r"[,|—–]", text, maxsplit=1)
+        head = parts[0].strip()
+        if len(parts) == 2 and parts[1].strip():
+            head_ascii = (
+                unicodedata.normalize("NFKD", romanize(head) if any("ऀ" <= c <= "ॿ" for c in head) else head)
+                .encode("ascii", "ignore")
+                .decode("ascii")
+                .lower()
+            )
+            head_toks = _collapse_initial_runs(re.findall(r"[a-z0-9]+", head_ascii))
+            head_proper = [
+                t
+                for t in head_toks
+                if t not in _HOSPITAL_STOP and t not in _GENERIC_HOSPITAL_QUALIFIERS and not t.isdigit() and len(t) >= 2
+            ]
+            text = head if head_proper else f"{head} {parts[1].strip()}"
+        else:
+            text = head
     # Convert Devanagari hospital names to Latin so Latin/Devanagari headers align
     if any("ऀ" <= c <= "ॿ" for c in text):
         text = romanize(text)
@@ -486,8 +639,18 @@ def normalize_hospital(raw: str) -> tuple[str | None, bool]:
             len(raw_tokens[i + 1]) == 1 or raw_tokens[i + 1].isdigit()
         ):
             return f"{raw_tokens[i]}_{raw_tokens[i + 1]}", is_lab
-    kept = [t for t in raw_tokens if t not in _HOSPITAL_STOP and not t.isdigit() and len(t) >= 2]
+    collapsed = _collapse_initial_runs(raw_tokens)
+    kept = [t for t in collapsed if t not in _HOSPITAL_STOP and not t.isdigit() and len(t) >= 2]
     if not kept:
+        # Preserve valid generic hospital names ("District General Hospital", "General Hospital")
+        # while still returning None for plain file words ("notes", "report", "patients").
+        if set(raw_tokens) & _HOSPITAL_TYPE_WORDS:
+            mods = [t for t in raw_tokens if t in _FALLBACK_HOSPITAL_MODIFIERS]
+            if len(mods) >= 2:
+                return "".join(mods[:2]), is_lab
+            if len(mods) == 1:
+                htype = next(t for t in raw_tokens if t in _HOSPITAL_TYPE_WORDS)
+                return f"{mods[0]}{htype}", is_lab
         return None, is_lab
     # Collapse common prefix-style compounds ("dhhardoi" -> "hardoi", "jeevan jyoti" -> "jeevanjyoti")
     joined = "".join(kept[:2]) if len(kept) >= 2 and len(kept[0]) + len(kept[1]) <= 14 else kept[0]
@@ -697,6 +860,15 @@ def extract_ages(text: str, *, structured: bool = False) -> set[int]:
             if 0 <= v <= 120:
                 out.add(v)
         return out
+    out.update(v for _pos, v in iter_free_ages(s))
+    return out
+
+
+def iter_free_ages(text: str) -> list[tuple[int, int]]:
+    """``(start, age)`` for every plausible age mention in free text (positions index ``text``;
+    the digit translation keeps lengths), so callers can attribute each one to its owner (P33-F2)."""
+    s = text.translate(UNICODE_DIGITS)
+    out: list[tuple[int, int]] = []
     for m in _AGE_FREE_RE.finditer(s):
         raw_num = m.group(1) or m.group(2)
         if not raw_num:
@@ -707,15 +879,22 @@ def extract_ages(text: str, *, structured: bool = False) -> set[int]:
             continue
         v = int(raw_num)
         if 0 <= v <= 120:
-            out.add(v)
+            out.append((m.start(), v))
     return out
 
 
 _GENDER_FREE_RE = re.compile(
-    r"(?i)(?:\b(?:sex|gender|ling)\b|लिंग)\s*[:\-]?\s*(male|female|m|f|पुरुष|महिला|स्त्री)\b"
+    r"(?i)(?:\b(?:sex|gender|ling)\b|लिंग)\s*[:\-]?\s*(male|female|m|f|पुरुष|महिला|स्त्री)(?![\w\u0900-\u097f])"
     r"|(?<!\d)\d{1,3}\s*(?:y(?:rs?|ears?)?)?\s*/\s*([MF])\b"
 )
-_RELATION_GENDER_RE = re.compile(r"(?i)(?<![/\w])([SDW])\s?/\s?O\b|(पुत्र|पुत्री|पत्नी)\b")
+#: ``S/o`` / ``D/o`` / ``W/o`` and their Hindi forms give the PATIENT's gender, except a Hindi kin word
+#: used as a field label ("पत्नी: <name>" = "Wife: <name>"), which introduces a relative (P33-F2).
+#: Devanagari words end in vowel signs (``ा``, ``ी``) that Python's ``\b`` does not treat as word
+#: characters, so word ends are explicit lookarounds; ``\b`` read "पुत्री" (daughter) as "पुत्र" (son)
+#: and never matched "महिला" / "स्त्री" (P33-PASS3-F1).
+_RELATION_GENDER_RE = re.compile(
+    r"(?i)(?<![/\w])([SDW])\s?/\s?O\b|(?<![\w\u0900-\u097f])(पुत्री|पुत्र|पत्नी)(?![\w\u0900-\u097f])(?!\s*[:：])"
+)
 
 
 def extract_genders(text: str, *, structured: bool = False) -> set[str]:
@@ -730,18 +909,26 @@ def extract_genders(text: str, *, structured: bool = False) -> set[str]:
         elif val in ("o", "other", "transgender"):
             out.add("O")
         return out
+    out.update(g for _pos, g in iter_free_genders(text))
+    return out
+
+
+def iter_free_genders(text: str) -> list[tuple[int, str]]:
+    """``(start, gender)`` for every free-text gender mention (``Sex: F``, ``34/M``, ``S/o``),
+    so callers can attribute each one to its owner (P33-F2)."""
+    out: list[tuple[int, str]] = []
     for m in _GENDER_FREE_RE.finditer(text.translate(UNICODE_DIGITS)):
         tok = (m.group(1) or m.group(2) or "").casefold()
         if tok in ("m", "male", "पुरुष"):
-            out.add("M")
+            out.append((m.start(), "M"))
         elif tok in ("f", "female", "महिला", "स्त्री"):
-            out.add("F")
+            out.append((m.start(), "F"))
     for m in _RELATION_GENDER_RE.finditer(text):
         code = (m.group(1) or m.group(2) or "").upper()
         if code in ("S", "पुत्र"):
-            out.add("M")
+            out.append((m.start(), "M"))
         elif code in ("D", "W", "पुत्री", "पत्नी"):
-            out.add("F")
+            out.append((m.start(), "F"))
     return out
 
 

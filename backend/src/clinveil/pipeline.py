@@ -146,6 +146,7 @@ def _run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Polic
                 entry.input_sha256 = unread_id(f)
         files.append(entry)
         input_shas.append(entry.input_sha256)
+    issued_pseudonyms = frozenset(link_result.pseudonyms.values())
     del index, link_result  # the run-local value index and link mapping never outlive the run
 
     exported = {e.output for e in files if e.output}
@@ -167,7 +168,7 @@ def _run(input_dir: Path, output_dir: Path, secret: ReleaseSecret, policy: Polic
         files_sanitized=n_san,
         files_quarantined=report["counts"]["files_quarantined"],
         records=len(records),
-        problems=tuple(check_release(output_dir, input_shas)),
+        problems=tuple(check_release(output_dir, input_shas, issued_pseudonyms=issued_pseudonyms)),
     )
 
 

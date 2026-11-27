@@ -86,6 +86,9 @@ class DateEvidence:
     def __repr__(self) -> str:
         return f"DateEvidence(ambiguous={self.alternate is not None})"
 
+    def __reduce__(self) -> Any:
+        raise TypeError("DateEvidence cannot be serialised")
+
 
 @dataclass(slots=True)
 class RecordEvidence:
@@ -125,8 +128,9 @@ class RecordEvidence:
     ambiguous_doc: bool = False
 
     def __repr__(self) -> str:
+        loc_kind = "doc" if self.record.loc == "doc" else ("row" if self.record.loc.startswith("row:") else "ptr")
         return (
-            f"RecordEvidence(loc={self.record.loc}, has_global={self.has_global_id}, "
+            f"RecordEvidence(loc_kind={loc_kind}, has_global={self.has_global_id}, "
             f"local_ids={len(self.local_ids)}, names={len(self.patient_names)})"
         )
 
@@ -147,12 +151,24 @@ class RecordEvidence:
 
     @property
     def has_any_evidence(self) -> bool:
-        return (
+        """True if ANY identity field is populated (Phase 3.3 NEW-6B): a partial record holding only
+        an age, a gender, a village or a relative's ID still takes part in conflict checks."""
+        return bool(
             self.has_strong_anchor
-            or bool(self.patient_names)
-            or bool(self.phones)
-            or bool(self.dobs)
-            or bool(self.relative_names)
+            or self.patient_names
+            or self.relative_names
+            or self.phones
+            or self.dobs
+            or self.birth_years
+            or self.ages
+            or self.genders
+            or self.insurance_id
+            or self.email
+            or self.raw_mrns
+            or self.villages
+            or self.districts
+            or self.pins
+            or self.relative_global_ids
         )
 
     def all_birth_years(self) -> frozenset[int]:

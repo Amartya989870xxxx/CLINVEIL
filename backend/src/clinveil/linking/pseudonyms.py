@@ -76,6 +76,8 @@ def assign_pseudonyms(
     multi_records: set[RecordKey] = set()
     for key, _tie, cluster in keyed:
         attempt = next_attempt.get(key, 0)
+        if attempt > 0:
+            stats.pseudonym_collisions_resolved += 1
         psn = pseudonymizer.pseudonym(key, attempt=attempt)
         while psn in used:
             attempt += 1
